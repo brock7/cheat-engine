@@ -5,7 +5,7 @@ unit ProcessList;
 interface
 
 uses
-  {$ifdef windows}jwawindows, windows, cefuncproc, {$endif}Classes, SysUtils{$ifndef JNI}, StdCtrls{$endif}, ProcessHandlerUnit {$ifndef windows},unixporthelper{$endif},newkernelhandler;
+  {$ifdef windows}jwawindows, windows, cefuncproc, LazUTF8, {$endif}Classes, SysUtils{$ifndef JNI}, StdCtrls{$endif}, ProcessHandlerUnit {$ifndef windows},unixporthelper{$endif},newkernelhandler;
 
 {$ifndef jni}
 procedure GetProcessList(ProcessList: TListBox; NoPID: boolean=false); overload;
@@ -34,6 +34,7 @@ resourcestring
 type TProcessListInfo=record
   processID: dword;
   processIcon: HICON;
+  issystemprocess: boolean;
 end;
 PProcessListInfo=^TProcessListInfo;
 
@@ -68,9 +69,16 @@ begin
     begin
       ProcessListInfo:= pointer( processlist.Objects[i]);
 {$ifdef windows}
-      if ProcessListInfo.processIcon>0 then
-        DestroyIcon(ProcessListInfo.processIcon);
+      if ProcessListInfo^.processIcon>0 then
+      begin
+        if ProcessListInfo^.processID<>GetCurrentProcessId then
+          DestroyIcon(ProcessListInfo^.processIcon);
+
+        ProcessListInfo^.processIcon:=0;
+      end;
 {$endif}
+
+
       freemem(ProcessListInfo);
 
       processlist.Objects[i]:=nil;
@@ -79,7 +87,7 @@ end;
 
 procedure cleanProcessList(processlist: TStrings);
 begin
-  OutputDebugString('cleanProcessList()');
+ // OutputDebugString('cleanProcessList()');
   sanitizeProcessList(processlist);
   processlist.clear;
 end;
@@ -94,38 +102,39 @@ var SNAPHandle: THandle;
     s: string;
 begin
 
+  ProcessListInfo:=nil;
   HI:=0;
 
   j:=0;
 
-  OutputDebugString('GetProcessList()');
+//  OutputDebugString('GetProcessList()');
 
   cleanProcessList(ProcessList);
 
 
-  OutputDebugString('Calling CreateToolhelp32Snapshot');
+ // OutputDebugString('Calling CreateToolhelp32Snapshot');
   SNAPHandle:=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
 
-  OutputDebugString('SNAPHandle='+inttohex(SNAPHandle,8));
+ // OutputDebugString('SNAPHandle='+inttohex(SNAPHandle,8));
 
   If SnapHandle<>0 then
   begin
-    OutputDebugString('SnapHandle>0');
+  //  OutputDebugString('SnapHandle>0');
 
     ZeroMemory(@ProcessEntry, sizeof(ProcessEntry));
 
-    OutputDebugString('Setting up processentry');
+    //OutputDebugString('Setting up processentry');
 
 
     if not assigned(Process32First) then
     begin
-      OutputDebugString('Process32First was not assigned');
+    //  OutputDebugString('Process32First was not assigned');
       exit;
     end;
 
-    OutputDebugString('Calling Process32First');
+   // OutputDebugString('Calling Process32First');
 
-    OutputDebugString('Setting up ProcessEntry dwSize');
+   // OutputDebugString('Setting up ProcessEntry dwSize');
     ProcessEntry.dwSize:=SizeOf(ProcessEntry);
 
 
@@ -135,10 +144,11 @@ begin
     Check:=Process32First(SnapHandle,ProcessEntry);
     while check do
     begin
+      s:=GetFirstModuleName(processentry.th32ProcessID);
+
 {$ifdef windows}
       if (noprocessinfo=false) and getprocessicons then
       begin
-        s:='';
 
 
         HI:=ExtractIcon(hinstance,ProcessEntry.szExeFile,0);
@@ -149,8 +159,8 @@ begin
           //alternative method:
           if (processentry.th32ProcessID>0) and (uppercase(copy(ExtractFileName(ProcessEntry.szExeFile), 1,3))<>'AVG') then //february 2014: AVG freezes processes that do createtoolhelp32snapshot on it's processes for several seconds. AVG has multiple processes...
           begin
-            s:=GetFirstModuleName(processentry.th32ProcessID);
-            OutputDebugString(s);
+            //s:=GetFirstModuleName(processentry.th32ProcessID);
+           // OutputDebugString(s);
             HI:=ExtractIcon(hinstance,pchar(s),0);
           end;
         end;
@@ -170,6 +180,15 @@ begin
             getmem(ProcessListInfo,sizeof(TProcessListInfo));
             ProcessListInfo.processID:=processentry.th32ProcessID;
             ProcessListInfo.processIcon:=HI;
+
+            s:=lowercase(s);
+
+          {  if pos('cheatengine',lowercase(ProcessEntry.szExeFile))>0 then
+            begin
+              beep;
+            end;    }
+
+            ProcessListInfo.issystemprocess:=(ProcessListInfo.processID=4) or (pos(lowercase(windowsdir),s)>0) or (pos('system32',s)>0);
           end;
           {$endif}
 
@@ -178,15 +197,15 @@ begin
           else
             s:=IntTohex(processentry.th32ProcessID,8)+'-';
 
-          s:=s+ExtractFilename(processentry.szExeFile);
+          s:=s+ExtractFilename(WinCPToUTF8(processentry.szExeFile));
 
 {$ifdef windows}
           if noprocessinfo then
-            ProcessList.Add(AnsiToUtf8(s))
+            ProcessList.Add(s)
           else
-            ProcessList.AddObject(AnsiToUtf8(s), TObject(ProcessListInfo));
+            ProcessList.AddObject(s, TObject(ProcessListInfo));
 {$else}
-          ProcessList.Add(AnsiToUtf8(s))
+          ProcessList.Add(s)
 {$endif}
         end;
       end;
@@ -199,7 +218,7 @@ begin
   end
   else
   begin
-    OutputDebugString('Apparently the handle is smaller than 0...');
+  //  OutputDebugString('Apparently the handle is smaller than 0...');
     {$ifdef windows}
     raise exception.Create(rsICanTGetTheProcessListYouArePropablyUsingWindowsNT);
     {$endif}
@@ -219,8 +238,13 @@ begin
       if processlist.Items.Objects[i]<>nil then
       begin
         pli:=pointer(processlist.Items.Objects[i]);
-        if pli.processIcon>0 then
-          DestroyIcon(pli.processIcon);
+        if pli^.processIcon>0 then
+        begin
+          if pli^.processID<>GetCurrentProcessId then
+            DestroyIcon(pli^.processIcon);
+
+          pli^.processIcon:=0;
+        end;
         freemem(pli);
       end;
 

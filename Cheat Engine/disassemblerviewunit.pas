@@ -73,6 +73,13 @@ type TDisassemblerview=class(TPanel)
     fOnSelectionChange: TDisassemblerSelectionChangeEvent;
     fOnExtraLineRender: TDisassemblerExtraLineRender;
 
+    fspaceAboveLines: integer;
+    fspaceBelowLines: integer;
+    fjlThickness: integer;
+    fjlSpacing: integer;
+
+    fhidefocusrect: boolean;
+
     scrolltimer: ttimer;
     procedure updateScrollbox;
     procedure scrollboxResize(Sender: TObject);
@@ -110,6 +117,7 @@ type TDisassemblerview=class(TPanel)
     procedure WndProc(var msg: TMessage); override;
     procedure DoEnter; override;
     procedure DoExit; override;
+    procedure DoAutoSize; override;
 
   published
     property OnKeyDown;
@@ -117,6 +125,12 @@ type TDisassemblerview=class(TPanel)
 
   public
     colors: TDisassemblerViewColors;
+    jlCallColor: TColor;
+    jlConditionalJumpColor: TColor;
+    jlUnConditionalJumpColor: TColor;
+
+    LastFormActiveEvent: qword;
+
 
     procedure reinitialize; //deletes the assemblerlines
 
@@ -139,6 +153,11 @@ type TDisassemblerview=class(TPanel)
     constructor create(AOwner: TComponent); override;
     destructor destroy; override;
   published
+    property HideFocusRect: boolean read fhidefocusrect write fhidefocusrect;
+    property SpaceAboveLines: integer read fspaceAboveLines write fspaceAboveLines;
+    property SpaceBelowLines: integer read fspaceBelowLines write fspaceBelowLines;
+    property jlThickness: integer read fjlThickness write fjlThickness;
+    property jlSpacing: integer read fjlSpacing write fjlSpacing;
     property ShowJumplines: boolean read fShowJumplines write setJumpLines;
     property ShowJumplineState: TShowJumplineState read fShowjumplinestate write setJumplineState;
     property TopAddress: ptrUint read fTopAddress write setTopAddress;
@@ -188,7 +207,9 @@ end;
 function TDisassemblerview.getOnDblClick: TNotifyEvent;
 begin
   if discanvas<>nil then
-    result:=disCanvas.OnDblClick;
+    result:=disCanvas.OnDblClick
+  else
+    result:=nil;
 end;
 
 procedure TDisassemblerview.setOnDblClick(x: TNotifyEvent);
@@ -200,7 +221,9 @@ end;
 function TDisassemblerview.getheaderWidth(headerid: integer): integer;
 begin
   if header<>nil then
-    result:=header.Sections[headerid].width;
+    result:=header.Sections[headerid].width
+  else
+    result:=0;
 end;
 
 procedure TDisassemblerview.setheaderWidth(headerid: integer; size: integer);
@@ -457,11 +480,31 @@ begin
   update;
 end;
 
+procedure TDisassemblerview.DoAutoSize;
+begin
+  DisableAutoSizing;
+  disassembleDescription.ClientHeight:=disassembleDescription.Canvas.TextHeight('GgXxYj')+4;
+  header.Height:=Canvas.TextHeight('GgXxyJjlL')+4;
+
+  disassembleDescription.Font.Height:=GetFontData(font.Handle).Height;
+
+  EnableAutoSizing;
+  inherited DoAutoSize;
+end;
 
 procedure TDisassemblerview.DisCanvasMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Integer);
+var timepassed: qword;
 begin
-  if ssLeft in shift then
-    DisCanvas.OnMouseDown(self,mbleft,shift,x,y);
+  timepassed:=gettickcount64-LastFormActiveEvent;
+  if timepassed>=50 then
+  begin
+    if ssLeft in shift then
+      DisCanvas.OnMouseDown(self,mbleft,shift,x,y);
+  end
+  else
+  begin
+    //outputdebugstring('skipped due to '+inttostr(timepassed)+' milliseconds');
+  end;
 end;
 
 procedure TDisassemblerview.DisCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Integer);
@@ -475,6 +518,7 @@ begin
   if (y<0) or (y>discanvas.Height) then exit; //moved out of range
 
   //find the selected line
+  line:=nil;
   found:=false;
   for i:=0 to fTotalvisibledisassemblerlines-1 do
   begin
@@ -486,7 +530,8 @@ begin
       break;
     end;
   end;
-  if not found then exit; //not found, which is weird, but whatever...
+  if (line=nil) or (not found) then exit; //not found, which is weird, but whatever...
+
 
 
   if line.address<>fSelectedAddress then
@@ -523,9 +568,15 @@ var
   address: ptrUint;
 
   found: boolean;
+  trianglesize: integer;
   jumplineoffset: integer;
 begin
-  jumplineoffset:=4;
+  if fTotalvisibledisassemblerlines=0 then exit;
+
+  trianglesize:=TDisassemblerLine(disassemblerlines[0]).defaultHeight div 4;
+  jumplineoffset:=trianglesize;
+
+  found:=false;
 
   for i:=0 to fTotalvisibledisassemblerlines-1 do
   begin
@@ -568,7 +619,7 @@ begin
         end;
       end;
 
-      inc(jumplineoffset,2);
+      inc(jumplineoffset,jlSpacing);
     end;
   end;
 end;
@@ -689,7 +740,7 @@ begin
       currentline:=disassemblerlines[i];
 
 
-      currentline.renderLine(currentAddress,currenttop, inrangeX(currentAddress,selStart,selStop), currentAddress=fSelectedAddress);
+      currentline.renderLine(currentAddress,currenttop, inrangeX(currentAddress,selStart,selStop), currentAddress=fSelectedAddress, fspaceAboveLines, fSpaceBelowLines);
 
       inc(currenttop, currentline.getHeight);
       inc(i);
@@ -913,6 +964,9 @@ begin
 
           dl:=TDisassemblerLine(disassemblerlines[0]);
           inc(fTopSubline, dl.height);
+          if fTopSubline<0 then
+            fTopSubline:=0;
+
         end;
       end;
     end;
@@ -1042,6 +1096,9 @@ var emptymenu: TPopupMenu;
 begin
   inherited create(AOwner);
 
+  jlSpacing:=2;
+  jlThickness:=1;
+
   emptymenu:=TPopupMenu.create(self);
 
   tabstop:=true;
@@ -1051,10 +1108,11 @@ begin
   statusinfo:=tpanel.Create(self);
   with statusinfo do
   begin
-    ParentFont:=false;
+    autosize:=true;
+    ParentFont:=true;
     align:=alTop;
     bevelInner:=bvLowered;
-    height:=19;
+//    height:=19;
     parent:=self;
     PopupMenu:=emptymenu;
    // color:=clYellow;
@@ -1063,10 +1121,11 @@ begin
   statusinfolabel:=TLabel.Create(self);
   with statusinfolabel do
   begin
-    parentfont:=false;
+    parentfont:=true;
     align:=alClient;
     Alignment:=taCenter;
-    autosize:=false;
+    autosize:=true;
+    //font.Size:=25;
     //transparent:=false;
     parent:=statusinfo;
     PopupMenu:=emptymenu;
@@ -1076,7 +1135,7 @@ begin
   with disassembleDescription do
   begin
     align:=alBottom;
-    height:=17;
+    //autosize:=true;
     bevelInner:=bvLowered;
     bevelOuter:=bvLowered;
     Color:=clWhite;
@@ -1084,8 +1143,7 @@ begin
     ParentFont:=false;
     Font.Charset:=DEFAULT_CHARSET;
     Font.Color:=clBtnText;
-    Font.Height:=-11;
-    Font.Name:='Courier';
+    Font.Name:='Courier New';
     Font.Style:=[];
 
     parent:=self;
@@ -1139,14 +1197,16 @@ begin
   with header do
   begin
     top:=0;
-    height:=20;
+    //autosize:=true;
+    //height:=20;
     OnSectionResize:=headerSectionResize;
     OnSectionTrack:=headerSectionTrack;
     parent:=scrollbox;
     onenter:=OnLostFocus;
     //header.Align:=alTop;
-    header.ParentFont:=false;
+    //header.ParentFont:=false;
     PopupMenu:=emptymenu;
+
     name:='Header';
   end;
 
@@ -1192,10 +1252,13 @@ begin
   disCanvas:=TPaintbox.Create(self);
   with disCanvas do
   begin
-    top:=header.Top+header.height;
+    AnchorSideTop.control:=header;
+    anchorsidetop.Side:=asrBottom;
     ParentFont:=true; //False;
 
-    height:=scrollbox.ClientHeight-header.height;
+    AnchorSideBottom.control:=scrollbox;
+    AnchorSideBottom.side:=asrBottom;
+
     anchors:=[akBottom, akLeft, akTop, akRight];
 
 
@@ -1216,6 +1279,8 @@ begin
   fShowJumplines:=true;
 
   self.OnMouseWheel:=mousescroll;
+
+
 
 
   getDefaultColors(colors);
@@ -1244,8 +1309,8 @@ begin
   c[csSecondaryHighlighted].backgroundcolor:=clGradientActiveCaption;
   c[csSecondaryHighlighted].normalcolor:=clHighlightText;
   c[csSecondaryHighlighted].registercolor:=clRed;
-  c[csSecondaryHighlighted].symbolcolor:=clLime;
-  c[csSecondaryHighlighted].hexcolor:=clYellow;
+  c[csSecondaryHighlighted].symbolcolor:=clBlue;
+  c[csSecondaryHighlighted].hexcolor:=clOlive;
 
   c[csBreakpoint].backgroundcolor:=clRed;
   c[csBreakpoint].normalcolor:=clBlack;
@@ -1264,6 +1329,29 @@ begin
   c[csSecondaryHighlightedbreakpoint].registercolor:=clRed;
   c[csSecondaryHighlightedbreakpoint].symbolcolor:=clLime;
   c[csSecondaryHighlightedbreakpoint].hexcolor:=clBlue;
+
+  //ultimap2
+  c[csUltimap].backgroundcolor:=clYellow;
+  c[csUltimap].normalcolor:=clBlack;
+  c[csUltimap].registercolor:=clGreen;
+  c[csUltimap].symbolcolor:=clBlue;
+  c[csUltimap].hexcolor:=clBlue;
+
+  c[csHighlightedUltimap].backgroundcolor:=clGreen;
+  c[csHighlightedUltimap].normalcolor:=clWhite;
+  c[csHighlightedUltimap].registercolor:=clRed;
+  c[csHighlightedUltimap].symbolcolor:=clLime;
+  c[csHighlightedUltimap].hexcolor:=clBlue;
+
+  c[csSecondaryHighlightedUltimap].backgroundcolor:=clGreen;
+  c[csSecondaryHighlightedUltimap].normalcolor:=clWhite;
+  c[csSecondaryHighlightedUltimap].registercolor:=clRed;
+  c[csSecondaryHighlightedUltimap].symbolcolor:=clLime;
+  c[csSecondaryHighlightedUltimap].hexcolor:=clBlue;
+
+  jlConditionalJumpColor:=clRed;
+  jlUnconditionalJumpColor:=clGreen;
+  jlCallColor:=clYellow;
 end;
 
 

@@ -39,6 +39,15 @@ begin
   result:=0;
 end;
 
+function application_getExeName(L: PLua_State): integer; cdecl;
+var
+  app: TApplication;
+begin
+  result:=0;
+  app:=luaclass_getClassObject(L);
+  lua_pushstring(L, app.ExeName);
+  result:=1;
+end;
 
 
 function application_getTitle(L: PLua_State): integer; cdecl;
@@ -57,6 +66,18 @@ begin
   result:=0;
 end;
 
+function application_getIcon(L: PLua_State): integer; cdecl;
+begin
+  luaclass_newClass(L, TApplication(luaclass_getClassObject(L)).Icon);
+  result:=1;
+end;
+
+function application_setIcon(L: PLua_State): integer; cdecl;
+begin
+  result:=0;
+  TApplication(luaclass_getClassObject(L)).icon:=lua_ToCEUserData(L, 1);
+end;
+
 
 procedure application_addMetaData(L: PLua_state; metatable: integer; userdata: integer );
 begin
@@ -68,6 +89,8 @@ begin
 
 
   Luaclass_addPropertyToTable(L, metatable, userdata, 'Title', application_getTitle, application_setTitle);
+  Luaclass_addPropertyToTable(L, metatable, userdata, 'Icon', application_getIcon, application_setIcon);
+  Luaclass_addPropertyToTable(L, metatable, userdata, 'ExeName', application_getExeName, nil);
 
 end;
 

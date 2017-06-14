@@ -7,12 +7,11 @@ object frmStacktrace: TfrmStacktrace
   Caption = 'Stacktrace'
   ClientHeight = 274
   ClientWidth = 683
-  Font.Height = -14
-  Font.Name = 'MS Sans Serif'
   OnClose = FormClose
   OnCreate = FormCreate
+  PopupMode = pmAuto
   Position = poOwnerFormCenter
-  LCLVersion = '1.0.8.0'
+  LCLVersion = '1.6.0.4'
   object ListView1: TListView
     Left = 0
     Height = 274

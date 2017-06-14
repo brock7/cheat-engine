@@ -6,13 +6,11 @@ object frmReferencedStrings: TfrmReferencedStrings
   Caption = 'Referenced Strings'
   ClientHeight = 288
   ClientWidth = 616
-  Font.Height = -13
-  Font.Name = 'MS Sans Serif'
   Menu = MainMenu1
   OnClose = FormClose
   OnShow = FormShow
   Position = poScreenCenter
-  LCLVersion = '1.3'
+  LCLVersion = '1.6.4.0'
   object Splitter1: TSplitter
     Left = 490
     Height = 288
@@ -39,7 +37,7 @@ object frmReferencedStrings: TfrmReferencedStrings
       item
         AutoSize = True
         Caption = 'String'
-        Width = 311
+        Width = 46
       end>
     HideSelection = False
     OwnerData = True

@@ -19,6 +19,8 @@ type
   { TAdvancedOptions }
 
   TAdvancedOptions = class(TForm)
+    Button2: TButton;
+    Button3: TButton;
     PopupMenu2: TPopupMenu;
     miReplaceWithNops: TMenuItem;
     miRestoreWithOriginal: TMenuItem;
@@ -34,13 +36,13 @@ type
     Timer1: TTimer;
     Panel1: TPanel;
     Button1: TButton;
-    Button4: TButton;
     Panel2: TPanel;
     Pausebutton: TSpeedButton;
     SaveButton: TSpeedButton;
     Label1: TLabel;
     N3: TMenuItem;
     Codelist2: TListView;
+    procedure Button3Click(Sender: TObject);
     procedure Codelist2Resize(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure FormResize(Sender: TObject);
@@ -118,7 +120,8 @@ uses MainUnit, MemoryBrowserFormUnit,
   standaloneunit,}
   formsettingsunit,
   MainUnit2,
-  processhandlerunit;
+  processhandlerunit,
+  DBK32functions;
 
 
 
@@ -298,6 +301,11 @@ end;
 
 
 procedure TAdvancedOptions.Codelist2Resize(Sender: TObject);
+begin
+
+end;
+
+procedure TAdvancedOptions.Button3Click(Sender: TObject);
 begin
 
 end;
@@ -549,7 +557,7 @@ var i,j,index: integer;
 begin
   multidelete:=codelist2.SelCount>1;
   if multidelete then
-    if messagedlg(rsAreYouSureYouWishToDeleteTheseEntries, mtConfirmation, [mbyes, mbno], 0) = mrno then exit;
+    if messagedlg(rsAreYouSureYouWishToDeleteTheseEntries, mtConfirmation, [mbyes, mbno], 0) <> mryes then exit;
 
 
   codelist2.Items.BeginUpdate;
@@ -560,7 +568,7 @@ begin
       if (index=-1) or (codelist2.Items.Count=0) then exit;
 
       if not multidelete then
-        if messagedlg(rsDelete+' '+codelist2.Items[index].SubItems[0]+' ?', mtConfirmation, [mbyes, mbno], 0) = mrno then exit;
+        if messagedlg(rsDelete+' '+codelist2.Items[index].SubItems[0]+' ?', mtConfirmation, [mbyes, mbno], 0) <> mryes then exit;
 
 
       setlength(code[index].before,0);
@@ -627,6 +635,7 @@ var i: integer;
     ct: _Context;
 
     down: boolean;
+    x: dword;
 begin
   down:=pausebutton.down;
   if down=oldpausestate then exit;
@@ -649,11 +658,18 @@ begin
 
       if (assigned(ntsuspendprocess)) then
       begin
-        OutputDebugString('Calling ntsuspendProcess');
-        ntsuspendProcess(processhandle);
+       // OutputDebugString('Calling ntsuspendProcess');
+        if IsValidHandle(processhandle) then
+        begin
+          x:=ntsuspendProcess(processhandle);
+          if (x<>0) and (DBKLoaded) then DBKSuspendProcess(processid);
+        end
+        else
+          if DBKLoaded then
+            DBKSuspendProcess(processid);
       end;
 
-      pausebutton.Hint:=rsResumeTheGame+pausehotkeystring;
+       pausebutton.Hint:=rsResumeTheGame+pausehotkeystring;
 
       red:=false;
       mainform.ProcessLabel.font.Color:=clred;
@@ -667,7 +683,16 @@ begin
     begin
       //resume
       if assigned(ntresumeprocess) then
-        ntresumeprocess(processhandle);
+      begin
+        if IsValidHandle(processhandle) then
+        begin
+          x:=ntresumeprocess(processhandle);
+          if (x<>0) and (DBKLoaded) then DBKResumeProcess(processid);
+        end
+        else
+          if DBKLoaded then
+            DBKResumeProcess(processid);
+      end;
 
       pausebutton.Hint:=rsPauseTheGame+pausehotkeystring;
 
@@ -776,62 +801,8 @@ resourcestring
   rsAOYouCanOnlyLoadExeFiles = 'You can only load EXE files';
 
 procedure TAdvancedOptions.Button4Click(Sender: TObject);
-var i:integer;
-    fname,expectedFilename: string;
-    oldtitle: string;
-
 begin
-  (*
-  {$ifndef net}
-  oldtitle:=opendialog1.Title;
-  opendialog1.Title:=StrSelectExeFor3D;
 
-  if Opendialog1.Execute then
-  begin
-    hyperscanview.HookDirect3d:=true;
-    hyperscanview.asktocontinue:=true;
-
-    KeysFileMapping:=CreateFileMapping($FFFFFFFF,nil,PAGE_READWRITE,0,sizeof(tkeys),'CEKEYS');
-    if KeysFileMapping=0 then
-      raise exception.Create(rsAOErrorWhileTryingToCreateTheSharedKeyStructureEtc);
-
-    keys:=MapViewOfFile(KeysFileMapping,FILE_MAP_ALL_ACCESS,0,0,0);
-    if keys=nil then
-    begin
-      closehandle(KeysFileMapping);
-      raise exception.Create(rsAOCheatEngineFailedToGetIntoTheConfigOfSelectedProgram);
-    end;
-
-    keys.configured:=false;
-
-
-    HyperscanView.HookDirect3d:=true;
-    HyperscanView.HookOpenGL:=false;
-
-
-    unpause;
-    detachIfPossible;
-    if Uppercase(extractfileext(opendialog1.FileName))<>'.EXE' then raise Exception.Create(rsAOYouCanOnlyLoadExeFiles);
-
-    Debuggerthread:=TDebugger.MyCreate(opendialog1.FileName);
-
-    while (debuggerthread<>nil) and (debuggerthread.attaching) do sleep(1);
-
-    mainForm.ProcessLabel.caption:=IntToHex(processid,8)+'-'+ExtractFileName(opendialog1.FileName);
-
-
-    mainform.debugproc:=true;
-
-    if formsettings.cbBreakOnAttach.checked then
-      memorybrowser.show;
-
-    mainform.enablegui(false);
-
-    with TFrmDirectx.Create(self) do show;
-  end;
-
-  opendialog1.title:=oldtitle;
-  {$endif} *)
 end;
 
 procedure TAdvancedOptions.FormCreate(Sender: TObject);
@@ -845,8 +816,6 @@ begin
   {$endif}
   {$endif}
 
-
-  button4.Visible:=false;
   savebutton.Visible:=false;
  // pausebutton.Left:=savebutton.Left;
 
@@ -861,7 +830,7 @@ end;
 
 procedure TAdvancedOptions.Panel1Resize(Sender: TObject);
 begin
-  button1.Left:=panel1.Width div 2 - button1.width div 2;
+
 end;
 
 procedure TAdvancedOptions.Codelist2DblClick(Sender: TObject);

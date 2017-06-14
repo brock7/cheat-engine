@@ -16,6 +16,8 @@
 #include "IOPLDispatcher.h"
 #include "interruptHook.h"
 #include "ultimap.h"
+#include "ultimap2.h"
+#include "noexceptions.h"
 
 #if (AMD64 && TOBESIGNED)
 #include "sigcheck.h"
@@ -70,6 +72,9 @@ NTSTATUS ZwCreateThread(
 
 //PVOID GetApiEntry(ULONG FunctionNumber);
 #endif
+
+
+
 
 
 
@@ -132,6 +137,21 @@ VOID TestDPC(IN struct _KDPC *Dpc, IN PVOID  DeferredContext, IN PVOID  SystemAr
 }
 
 
+VOID TestThread(__in PVOID StartContext)
+{
+	PEPROCESS x = (PEPROCESS)StartContext;
+	DbgPrint("Hello from testthread");
+
+	//PsSuspendProcess((PEPROCESS)StartContext);
+
+	
+
+	DbgPrint("x=%p\n", x);
+
+
+	
+}
+
 NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject,
                      IN PUNICODE_STRING RegistryPath)
 /*++
@@ -172,6 +192,8 @@ Return Value:
 	
 	criticalSection csTest;
 
+	HANDLE Ultimap2Handle;
+
 	
 	KernelCodeStepping=0;
 	KernelWritesIgnoreWP = 0;
@@ -184,6 +206,11 @@ Return Value:
 	this_es=getES();
 	this_fs=getFS();
 	this_gs=getGS();	
+
+
+
+	//InitializeObjectAttributes(&ao, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+	//PsCreateSystemThread(&Ultimap2Handle, 0, NULL, 0, NULL, TestThread, PsGetCurrentProcess());
 
 	DbgPrint("DBK loading...");
 #ifdef TOBESIGNED
@@ -359,9 +386,8 @@ Return Value:
 
 	//Processlist init
 #ifndef CETC
-
 	ProcessEventCount=0;
-	KeInitializeSpinLock(&ProcesslistSL);
+	ExInitializeResourceLite(&ProcesslistR);	
 #endif
 
 	CreateProcessNotifyRoutineEnabled=FALSE;
@@ -395,8 +421,11 @@ Return Value:
 #else
 	PTESize=8; //pae
 	PAGE_SIZE_LARGE=0x200000;
-	MAX_PTE_POS=0xFFFFF6FFFFFFFFF8ULL;
-	MAX_PDE_POS=0xFFFFF6FB7FFFFFF8ULL;
+	//base was 0xfffff68000000000ULL
+
+	//to 
+	MAX_PTE_POS=0xFFFFF6FFFFFFFFF8ULL; // base + 0x7FFFFFFFF8
+	MAX_PDE_POS=0xFFFFF6FB7FFFFFF8ULL; // base + 0x7B7FFFFFF8
 #endif
 
 	
@@ -501,14 +530,39 @@ Return Value:
 
 		DbgPrint("Testing forEachCpu(...)\n");
 		forEachCpu(TestDPC, NULL, NULL, NULL);
+		forEachCpuAsync(TestDPC, NULL, NULL, NULL);
 
 		forEachCpuPassive(TestPassive, 0);
 
 		DbgPrint("LVT_Performance_Monitor=%x\n", (UINT_PTR)&y.LVT_Performance_Monitor-(UINT_PTR)&y);
 	}
+
+	DbgPrint("No exceptions test:");
+	if (NoExceptions_Enter())
+	{
+		int o = 45678;
+		int x=0, r=0;
+		//r=NoExceptions_CopyMemory(&x, &o, sizeof(x));
+
+		r = NoExceptions_CopyMemory(&x, (PVOID)0, sizeof(x));
+
+		DbgPrint("o=%d x=%d r=%d", o, x, r);
+
+
+		DbgPrint("Leaving NoExceptions mode");
+		NoExceptions_Leave();
+	}
+
+
+	RtlInitUnicodeString(&temp, L"PsSuspendProcess");
+	PsSuspendProcess = MmGetSystemRoutineAddress(&temp);
+
+	RtlInitUnicodeString(&temp, L"PsResumeProcess");
+	PsResumeProcess = MmGetSystemRoutineAddress(&temp);
 	
     return STATUS_SUCCESS;
 }
+
 
 
 NTSTATUS DispatchCreate(IN PDEVICE_OBJECT DeviceObject,
@@ -525,14 +579,18 @@ NTSTATUS DispatchCreate(IN PDEVICE_OBJECT DeviceObject,
 
 
 	if (SeSinglePrivilegeCheck(sedebugprivUID, UserMode))
-	{
-#ifdef TOBESIGNED
-		NTSTATUS s=SecurityCheck();	
-		Irp->IoStatus.Status = s; 		
-	//	DbgPrint("Returning %x (and %x)\n", Irp->IoStatus.Status, s);
-#else
+	{		
 		Irp->IoStatus.Status = STATUS_SUCCESS;
+#ifdef AMD64
+#ifdef TOBESIGNED
+		{
+			NTSTATUS s=SecurityCheck();	
+			Irp->IoStatus.Status = s; 		
+		}
+	//	DbgPrint("Returning %x (and %x)\n", Irp->IoStatus.Status, s);
 #endif
+#endif
+
 
 	}
 	else
@@ -576,8 +634,11 @@ void UnloadDriver(PDRIVER_OBJECT DriverObject)
 	}
 
 	ultimap_disable();
+	DisableUltimap2();
 
 	clean_APIC_BASE();
+
+	NoExceptions_Cleanup();
 	
 
 	if (KeServiceDescriptorTableShadow && registered) //I can't unload without a shadotw table (system service registered)
@@ -618,7 +679,15 @@ void UnloadDriver(PDRIVER_OBJECT DriverObject)
 
 			if (CreateProcessNotifyRoutineEnabled)
 			{
+				DbgPrint("Removing process watch");
+#if (NTDDI_VERSION >= NTDDI_VISTASP1)
+				PsSetCreateProcessNotifyRoutineEx(CreateProcessNotifyRoutineEx,TRUE);
+#else
 				PsSetCreateProcessNotifyRoutine(CreateProcessNotifyRoutine,TRUE);
+#endif
+
+				
+				DbgPrint("Removing thread watch");
 				PsRemoveCreateThreadNotifyRoutine2(CreateThreadNotifyRoutine);
 			}
 
@@ -645,4 +714,18 @@ void UnloadDriver(PDRIVER_OBJECT DriverObject)
 	ExFreePool(BufDeviceString);
 #endif
 
+	CleanProcessList();
+
+	ExDeleteResourceLite(&ProcesslistR);
+
+	RtlZeroMemory(&ProcesslistR, sizeof(ProcesslistR));
+
+#if (NTDDI_VERSION >= NTDDI_VISTA)
+	if (DRMHandle)
+	{
+		DbgPrint("Unregistering DRM handle");
+		ObUnRegisterCallbacks(DRMHandle);
+		DRMHandle = NULL;
+	}
+#endif
 }

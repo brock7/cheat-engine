@@ -17,6 +17,9 @@ implementation
 
 uses luaclass, LuaCustomControl;
 
+resourcestring
+  rsTheGivenFormIsNotCompatible = 'The given form is not compatible. Formclass=';
+
 function createForm(L: Plua_State): integer; cdecl;
 var f: tcustomform;
   parameters: integer;
@@ -32,8 +35,8 @@ begin
 
   lua_pop(L, lua_gettop(L));
 
-
   f:=ce_createForm(visible);  //not relly a customform, but it inherits from it, so good enough
+  f.PopupMode:=pmAuto;
   luaclass_newClass(L, f);
   result:=1;
 
@@ -66,9 +69,9 @@ begin
     CleanupLuaCall(tmethod(control.onClose));
     control.onClose:=nil;
 
-    if lua_isfunction(L,-1) then
+    if lua_isfunction(L,1) then
     begin
-      routine:=Lua_ToString(L,-1);
+      routine:=Lua_ToString(L,1);
       f:=luaL_ref(L,LUA_REGISTRYINDEX);
 
       lc:=TLuaCaller.create;
@@ -76,9 +79,9 @@ begin
       control.OnClose:=lc.CloseEvent;
     end
     else
-    if lua_isstring(L,-1) then
+    if lua_isstring(L,1) then
     begin
-      routine:=lua_tostring(L,-1);
+      routine:=lua_tostring(L,1);
       lc:=TLuaCaller.create;
       lc.luaroutine:=routine;
       control.OnClose:=lc.CloseEvent;
@@ -224,6 +227,7 @@ function customform_dragNow(L: Plua_State): integer; cdecl;
 var
   f: TCustomForm;
 begin
+  result:=0;
   f:=luaclass_getClassObject(L);
   ReleaseCapture;
   SendMessageA(f.Handle,WM_SYSCOMMAND,$F012,0);
@@ -280,7 +284,7 @@ begin
       end;
     end
     else
-      raise exception.create('The given form is not compatible. Formclass='+f.ClassName);
+      raise exception.create(rsTheGivenFormIsNotCompatible+f.ClassName);
   end
   else
     lua_pop(L, lua_gettop(L));
@@ -305,6 +309,15 @@ begin
 
   if lua_gettop(L)>=1 then
     form.DoNotSaveInTable:=lua_toboolean(L,-1);
+end;
+
+function ceform_saveCurrentStateAsDesign(L: PLua_State): integer; cdecl;
+var
+  form: Tceform;
+begin
+  result:=0;
+  form:=luaclass_getClassObject(L);
+  form.SaveCurrentStateasDesign;
 end;
 
 function customform_getModalResult(L: PLua_State): integer; cdecl;
@@ -350,6 +363,7 @@ begin
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'printToRasterImage', customform_printToRasterImage);
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'dragNow', customform_dragNow);
 
+
   luaclass_addPropertyToTable(L, metatable, userdata, 'OnClose', customform_getOnClose, customform_setOnClose);
   luaclass_addPropertyToTable(L, metatable, userdata, 'Menu', customform_getMenu, customform_setMenu);
   luaclass_addPropertyToTable(L, metatable, userdata, 'ModalResult', customform_getModalResult, customform_setModalResult);
@@ -361,6 +375,8 @@ begin
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'saveToFile', ceform_saveToFile);
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'setDoNotSaveInTable', ceform_setDoNotSaveInTable);
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'getDoNotSaveInTable', ceform_getDoNotSaveInTable);
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'saveCurrentStateAsDesign', ceform_saveCurrentStateasDesign);
+
   luaclass_addPropertyToTable(L, metatable, userdata, 'DoNotSaveInTable', ceform_getDoNotSaveInTable, ceform_setDoNotSaveInTable);
 
 end;

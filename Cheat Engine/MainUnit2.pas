@@ -11,10 +11,10 @@ uses windows, dialogs,forms,classes,LCLIntf, LCLProc, sysutils,registry,ComCtrls
      memscan,plugin, hotkeyhandler,frmProcessWatcherunit, newkernelhandler,
      debuggertypedefinitions, commonTypeDefs;
 
-const ceversion=6.5;
+const ceversion=6.7;
 
 resourcestring
-  cename = 'Cheat Engine 6.5';
+  cename = 'Cheat Engine 6.7';
   rsPleaseWait = 'Please Wait!';
 
 procedure UpdateToolsMenu;
@@ -88,7 +88,8 @@ resourcestring
 implementation
 
 
-uses KernelDebugger,mainunit, DebugHelper, CustomTypeHandler, ProcessList, Globals, frmEditHistoryUnit;
+uses KernelDebugger,mainunit, DebugHelper, CustomTypeHandler, ProcessList, Globals,
+     frmEditHistoryUnit, DBK32functions;
 
 procedure UpdateToolsMenu;
 var i: integer;
@@ -148,11 +149,20 @@ begin
 
           mainform.Process1.visible:=cbShowProcesslist.checked;
 
-          if reg.ValueExists('Ask if table has lua script') then
-            cbAskIfTableHasLuascript.Checked:=reg.ReadBool('Ask if table has lua script');
 
-          if reg.ValueExists('Always run script') then
-            cbAlwaysRunScript.Checked:=reg.ReadBool('Always run script');
+          if reg.ValueExists('LuaScriptAction') then
+          begin
+            i:=reg.ReadInteger('LuaScriptAction');
+            case i of
+              0: miLuaExecAlways.checked:=true;
+              1: miLuaExecSignedOnly.checked:=true;
+              2: miLuaExecAsk.checked:=true;
+              3: miLuaExecNever.checked:=true;
+            end;
+          end
+          else
+            miLuaExecSignedOnly.checked:=true;
+
 
           if reg.ValueExists('AllByte') then cgAllTypes.checked[0]:=reg.readBool('AllByte');
           if reg.ValueExists('AllWord') then cgAllTypes.checked[1]:=reg.readBool('AllWord');
@@ -228,11 +238,17 @@ begin
           else
             speedhackspeed1.speed:=1;
 
+          if reg.ValueExists('Speedhack 1 disablewhenreleased') then
+            speedhackspeed1.disablewhenreleased:=reg.ReadBool('Speedhack 1 disablewhenreleased');
+
 
           if reg.ValueExists('Speedhack 2 speed') then
             speedhackspeed2.speed:=reg.ReadFloat('Speedhack 2 speed')
           else
             speedhackspeed2.speed:=1;
+
+          if reg.ValueExists('Speedhack 2 disablewhenreleased') then
+            speedhackspeed2.disablewhenreleased:=reg.ReadBool('Speedhack 2 disablewhenreleased');
 
 
 
@@ -241,18 +257,25 @@ begin
           else
             speedhackspeed3.speed:=1;
 
+          if reg.ValueExists('Speedhack 3 disablewhenreleased') then
+            speedhackspeed3.disablewhenreleased:=reg.ReadBool('Speedhack 3 disablewhenreleased');
 
           if reg.ValueExists('Speedhack 4 speed') then
             speedhackspeed4.speed:=reg.ReadFloat('Speedhack 4 speed')
           else
             speedhackspeed4.speed:=1;
 
+          if reg.ValueExists('Speedhack 4 disablewhenreleased') then
+            speedhackspeed4.disablewhenreleased:=reg.ReadBool('Speedhack 4 disablewhenreleased');
 
 
           if reg.ValueExists('Speedhack 5 speed') then
             speedhackspeed5.speed:=reg.ReadFloat('Speedhack 5 speed')
           else
             speedhackspeed5.speed:=1;
+
+          if reg.ValueExists('Speedhack 5 disablewhenreleased') then
+            speedhackspeed5.disablewhenreleased:=reg.ReadBool('Speedhack 5 disablewhenreleased');
 
 
 
@@ -268,7 +291,7 @@ begin
 
 
           if reg.ValueExists('Show Cheat Engine Hotkey') then
-            reg.ReadBinaryData('Show Cheat Engine Hotkey',temphotkeylist[0][0],10) else  mainform.label7.Caption:='';
+            reg.ReadBinaryData('Show Cheat Engine Hotkey',temphotkeylist[0][0],10);
 
           if reg.ValueExists('Pause process Hotkey') then
             reg.ReadBinaryData('Pause process Hotkey',temphotkeylist[1][0],10);
@@ -279,17 +302,27 @@ begin
           if reg.ValueExists('Set Speedhack speed 1 Hotkey') then
             reg.ReadBinaryData('Set Speedhack speed 1 Hotkey',temphotkeylist[3][0],10);
 
+          speedhackspeed1.keycombo:=temphotkeylist[3];
+
           if reg.ValueExists('Set Speedhack speed 2 Hotkey') then
             reg.ReadBinaryData('Set Speedhack speed 2 Hotkey',temphotkeylist[4][0],10);
+
+          speedhackspeed2.keycombo:=temphotkeylist[4];
 
           if reg.ValueExists('Set Speedhack speed 3 Hotkey') then
             reg.ReadBinaryData('Set Speedhack speed 3 Hotkey',temphotkeylist[5][0],10);
 
+          speedhackspeed3.keycombo:=temphotkeylist[5];
+
           if reg.ValueExists('Set Speedhack speed 4 Hotkey') then
             reg.ReadBinaryData('Set Speedhack speed 4 Hotkey',temphotkeylist[6][0],10);
 
+          speedhackspeed4.keycombo:=temphotkeylist[6];
+
           if reg.ValueExists('Set Speedhack speed 5 Hotkey') then
             reg.ReadBinaryData('Set Speedhack speed 5 Hotkey',temphotkeylist[7][0],10);
+
+          speedhackspeed5.keycombo:=temphotkeylist[7];
 
           if reg.ValueExists('Increase Speedhack speed') then
             reg.ReadBinaryData('Increase Speedhack speed',temphotkeylist[8][0],10);
@@ -531,6 +564,11 @@ begin
             
           Skip_PAGE_NOCACHE:=cbSkip_PAGE_NOCACHE.Checked;
 
+          if reg.ValueExists('Pause when scanning on by default') then
+            cbPauseWhenScanningOnByDefault.Checked:=reg.readbool('Pause when scanning on by default');
+
+          MainForm.cbPauseWhileScanning.Checked:=cbPauseWhenScanningOnByDefault.checked;
+
 
           if reg.ValueExists('Hide all windows') then
             cbHideAllWindows.Checked:=reg.ReadBool('Hide all windows');
@@ -652,6 +690,45 @@ begin
           end;
 
           logWrites:=cbWriteLoggingOn.checked;
+
+          if reg.ValueExists('Show Language MenuItem') then
+            cbShowLanguageMenuItem.Checked:=reg.ReadBool('Show Language MenuItem');
+
+          MainForm.miLanguages.Visible:=cbShowLanguageMenuItem.Checked and (lbLanguages.Count>1);
+
+          if reg.ValueExists('DPI Aware') then
+            cbDPIAware.Checked:=reg.readBool('DPI Aware');
+
+          if reg.ValueExists('Override Default Font') then
+            cbOverrideDefaultFont.Checked:=reg.readbool('Override Default Font');
+
+          {$ifdef privatebuild}
+          if reg.ValueExists('DoNotOpenProcessHandles') then
+            cbDontOpenHandle.Checked:=reg.readbool('DoNotOpenProcessHandles');
+
+          DoNotOpenProcessHandles:=cbDontOpenHandle.checked;
+
+          if reg.ValueExists('ProcessWatcherOpensHandles') then
+            cbProcessWatcherOpensHandles.Checked:=reg.readbool('ProcessWatcherOpensHandles');
+
+          ProcessWatcherOpensHandles:=cbProcessWatcherOpensHandles.checked;
+
+          if reg.ValueExists('useapctoinjectdll') then
+            cbInjectDLLWithAPC.Checked:=reg.readbool('useapctoinjectdll');
+
+          useapctoinjectdll:=cbInjectDLLWithAPC.checked;
+          {$else}
+          DoNotOpenProcessHandles:=false;
+          ProcessWatcherOpensHandles:=false;
+          useapctoinjectdll:=false;
+          {$endif}
+
+          if reg.ValueExists('Always Sign Table') then
+            cbAlwaysSignTable.Checked:=reg.readBool('Always Sign Table');
+
+          if reg.ValueExists('Always Ask For Password') then
+            cbAlwaysAskForPassword.Checked:=reg.readBool('Always Ask For Password');
+
         end;
 
 
@@ -752,9 +829,11 @@ begin
   MemoryBrowser.Kerneltools1.Enabled:=DBKLoaded;
   {$endif}
 
-
-  mainform.autoattachlist.Delimiter:=';';
-  mainform.autoattachlist.DelimitedText:=formsettings.EditAutoAttach.Text;
+  if mainform.autoattachlist<>nil then
+  begin
+    mainform.autoattachlist.Delimiter:=';';
+    mainform.autoattachlist.DelimitedText:=formsettings.EditAutoAttach.Text;
+  end;
 
 
   if formsettings.cbShowMainMenu.Checked then

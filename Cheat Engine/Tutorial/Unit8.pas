@@ -44,11 +44,11 @@ resourcestring
   rsLOSER = 'BOO';
 
   rsTutorialStep7=
-    'Code injection is a technique where one injects a piece of code into the target process, and then reroute the '+
-    'execution of code to go through your own written code'+#13#10+
+    'Code injection is a technique where you inject a piece of code into the target process, and then reroute the '+
+    'execution of code to go through your own written code.'+#13#10+
     ''+#13#10+
-    'In this tutorial you''ll have a health value and a button that will decrease your health with 1 each time you click it.'+#13#10+
-    'Your task is to use code injection to increase the value of your health with 2 every time it is clicked'+#13#10+
+    'In this tutorial you''ll have a health value and a button that will decrease your health by 1 each time you click it.'+#13#10+
+    'Your task is to use code injection to make the button increase your health by 2 each time it is clicked'+#13#10+
     ''+#13#10+
     'Start with finding the address and then find what writes to it.'+#13#10+
     'then when you''ve found the code that decreases it browse to that address in the disassembler, and open the auto '+
@@ -109,6 +109,7 @@ begin
   memo1.lines.text:=rsTutorialStep7;
   memo1.Lines.Insert(0, Format(rsStep7CodeInjectionPW, [inttostr(0)+inttostr(13370)]));
   memo1.SelStart:=0;
+  font.size:=12;
 end;
 
 procedure TForm8.Button2Click(Sender: TObject);

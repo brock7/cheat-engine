@@ -10,6 +10,7 @@
 #include "DBKFunc.h"
 
 #include "vmxhelper.h"
+#include "noexceptions.h"
 /*#include "deepkernel.h"
 */
 
@@ -205,11 +206,21 @@ BOOLEAN WriteProcessMemory(DWORD PID,PEPROCESS PEProcess,PVOID Address,DWORD Siz
 					}
 				}
 
-
-				RtlCopyMemory(target, source, Size);
+				
+				if ((loadedbydbvm) || ((UINT_PTR)target < 0x8000000000000000ULL))
+				{
+					RtlCopyMemory(target, source, Size);
+					ntStatus = STATUS_SUCCESS;
+				}
+				else
+				{
+					i = NoExceptions_CopyMemory(target, source, Size);
+					if (i != Size)
+						ntStatus = STATUS_UNSUCCESSFUL;
+					else
+						ntStatus = STATUS_SUCCESS;
+				}
 				   
-				ntStatus = STATUS_SUCCESS;	
-
 				if ((loadedbydbvm) || (disabledWP))
 				{
 					UINT_PTR lastError=0;
@@ -298,9 +309,22 @@ BOOLEAN ReadProcessMemory(DWORD PID,PEPROCESS PEProcess,PVOID Address,DWORD Size
 					vmx_disable_dataPageFaults();
 				}
 
-				RtlCopyMemory(target,source,Size);
-
-				ntStatus = STATUS_SUCCESS;	
+			
+				if ((loadedbydbvm) || ((UINT_PTR)source < 0x8000000000000000ULL))
+				{
+					RtlCopyMemory(target, source, Size);
+					ntStatus = STATUS_SUCCESS;
+				}
+				else
+				{
+					i=NoExceptions_CopyMemory(target, source, Size);
+					if (i != Size)
+						ntStatus = STATUS_UNSUCCESSFUL;
+					else
+						ntStatus = STATUS_SUCCESS;
+				}
+				
+				
 
 				if (loadedbydbvm)
 				{
@@ -423,10 +447,117 @@ UINT_PTR SignExtend(UINT_PTR a)
 #endif
 }
 
+UINT_PTR KnownPageTableBase = 0;
+UINT_PTR getPageTableBase()
+{
+#if (NTDDI_VERSION >= NTDDI_VISTA)
+	if (KnownPageTableBase==0)
+	{
+		RTL_OSVERSIONINFOW v;
+		v.dwOSVersionInfoSize = sizeof(v);
+		if (RtlGetVersion(&v))
+		{
+			DbgPrint("RtlGetVersion failed");
+			return 0;
+		}
+
+		if ((v.dwMajorVersion >= 10) && (v.dwBuildNumber >= 14393))
+		{
+			PHYSICAL_ADDRESS a;
+			PVOID r;
+			a.QuadPart = getCR3() & 0xFFFFFFFFFFFFF000ULL;
+			r = MmGetVirtualForPhysical(a);
+
+			KnownPageTableBase = ((UINT_PTR)r) & 0xFFFFFF8000000000ULL;
+
+			MAX_PTE_POS = KnownPageTableBase + 0x7FFFFFFFF8ULL;
+			MAX_PDE_POS = KnownPageTableBase + 0x7B7FFFFFF8ULL;
+		
+			/*
+			//0x00400000 should be readable by ce's design.			
+			struct PTEStruct64 PML4Table[512];
+			PHYSICAL_ADDRESS r400000;
+
+			r400000=MmGetPhysicalAddress((PVOID)0x00400000);
+			if (r400000.QuadPart == 0)
+			{
+				DbgPrint("CE is not loaded at 0x00400000");
+				return 0;
+			}
+
+			
+			DbgPrint("Searching for pagetable base");
+			DbgPrint("PTEStruct64 = %d bytes", sizeof(PML4Table));
+
+			if (ReadPhysicalMemory((char *)(getCR3() & 0xFFFFFFFFFFFFF000ULL), sizeof(PML4Table), &PML4Table)==STATUS_SUCCESS)
+			{
+				int i;
+				for (i = 511; i >0; i++)
+				{
+					//Each entry describes a range of 0x0000008000000000
+					//0   =0000000000000000->0000007fffffffff
+					//1   =0000008000000000->000000ffffffffff
+					//255 =00007F8000000000->ffff800000000000  (sign extend)
+					//511 =FFFFFF8000000000->FFFFFFFFFFFFFFFF  (sign extend)
+					UINT_PTR address = SignExtend(i * 0x0000008000000000ULL);
+					
+					if (MmIsAddressValid((PVOID)address))
+					{
+						
+
+
+						PMDL mdl = IoAllocateMdl((PVOID)address, 4096, FALSE, FALSE, NULL);
+						DbgPrint("%p is valid", (PVOID)address);
+
+						if (mdl)
+						{
+							__try
+							{
+								MmProbeAndLockPages(mdl, KernelMode, IoReadAccess);
+
+								//do stuff, profit
+
+								//Ok, on hold, as MmGetVirtualForPhysical gives me exactly what I want
+
+								MmUnlockPages(mdl);
+							}
+							__except (1)
+							{
+								DbgPrint("%d was wrong", i);
+							}
+							IoFreeMdl(mdl);
+						}
+					}
+				}
+
+			}
+			else
+				DbgPrint("Failure reading the PML4 table");
+				*/
+
+		}
+		else
+			KnownPageTableBase=PAGETABLEBASE;
+	}	
+
+	return KnownPageTableBase;
+#else
+	return PAGETABLEBASE;
+#endif
+
+}
+
 typedef void PRESENTPAGECALLBACK(UINT_PTR StartAddress, UINT_PTR EndAddress, struct PTEStruct *pageEntry);
 BOOL walkPagingLayout(PEPROCESS PEProcess, UINT_PTR MaxAddress, PRESENTPAGECALLBACK OnPresentPage)
 {
+#ifdef AMD64
+	UINT_PTR pagebase = getPageTableBase();
+#else
 	UINT_PTR pagebase = PAGETABLEBASE;
+#endif
+
+	if (pagebase == 0)
+		return FALSE;
 
 	if (OnPresentPage == NULL)
 		return FALSE;
@@ -462,13 +593,14 @@ BOOL walkPagingLayout(PEPROCESS PEProcess, UINT_PTR MaxAddress, PRESENTPAGECALLB
 #endif
 
 	
-
+#ifdef AMD64
 				if ((PPML4E) && (PPML4E->P == 0))
 				{
 					currentAddress &= 0xffffff8000000000ULL;
 					currentAddress += 0x8000000000ULL;	
 					continue;
 				}
+#endif
 
 				if ((PPDPE) && (PPDPE->P == 0))
 				{		
@@ -643,7 +775,11 @@ NTSTATUS markAllPagesAsNeverAccessed(PEPROCESS PEProcess)
 
 BOOLEAN GetMemoryRegionData(DWORD PID,PEPROCESS PEProcess, PVOID mempointer,ULONG *regiontype, UINT_PTR *memorysize,UINT_PTR *baseaddress)
 {
-	UINT_PTR pagebase=PAGETABLEBASE;
+#ifdef AMD64
+	UINT_PTR pagebase = getPageTableBase();
+#else
+	UINT_PTR pagebase = PAGETABLEBASE;
+#endif
 
 
 
@@ -653,6 +789,12 @@ BOOLEAN GetMemoryRegionData(DWORD PID,PEPROCESS PEProcess, PVOID mempointer,ULON
 	struct PTEStruct *PPTE,*PPDE, *PPDPE, * PPML4E;
 	PEPROCESS selectedprocess=PEProcess;
 	BOOL ShowResult=0;
+
+	if (pagebase == 0)
+	{
+		DbgPrint("GetMemoryRegionData failed because pagebase == 0");
+		return FALSE;
+	}
 
 	if ((UINT_PTR)mempointer==(UINT_PTR)0x12000)
 		ShowResult=1;

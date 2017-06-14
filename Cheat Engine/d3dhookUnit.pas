@@ -454,14 +454,23 @@ type
     property OnClick: TD3DClickEvent read fonclick write fonclick;
   end;
 
+
+
+
 var D3DHook: TD3DHook;
 
 function safed3dhook(size: integer=16*1024*1024; hookwindow: boolean=true): TD3DHook;
+procedure FixAlpha(aPNG: TPortableNetworkGraphic);
 
 implementation
 
 uses frmautoinjectunit, autoassembler, MainUnit, frmSaveSnapshotsUnit,
   frmsnapshothandlerUnit, symbolhandler, ProcessHandlerUnit, Globals;
+
+resourcestring 
+  rsTheD3dhookObjectHasNotBeenCreatedYet = 'The d3dhook object has not been created yet';
+  rsD3DHookFailureToOpenTheSharedMemoryObject = 'D3DHook: Failure to open the shared memory object';
+  rsD3DHookFailureToMapTheSharedMemoryObject = 'D3DHook: Failure to map the shared memory object';
 
 procedure TD3DMessageHandler.handleSnapshot;
 begin
@@ -626,12 +635,10 @@ begin
       //execute the command
       console.log.add(console.commandline.Text);
 
-      LuaCS.enter;
       old:=lua_oldprintoutput;
       lua_setPrintOutput(console.log);
       lua_dostring(LuaVM, pchar(console.commandline.Text));
       lua_setPrintOutput(old);
-      luacs.Leave;
 
       //calculate the max number of lines
       maxlines:=trunc((console.seperator.y-console.background.y) / console.output.FontMap.height);
@@ -1072,6 +1079,40 @@ begin
   end;
 end;
 
+
+
+procedure FixAlpha(aPNG: TPortableNetworkGraphic);
+type
+  TColor32 = packed record
+    B, G, R, A: Byte;
+  end;
+  PColor32=^TColor32;
+  TColor32Array = array[0..0] of TColor32;
+  PColor32Array = ^TColor32Array;
+var
+  x, y: Integer;
+  Line: PColor32Array;
+
+  R,G,B: Integer;
+begin
+  R := aPng.TransparentColor and $ff;
+  G := (aPng.TransparentColor shr 8) and $ff;
+  B := (aPng.TransparentColor shr 16) and $ff;
+
+  for y := 0 to aPNG.Height - 1 do
+  begin
+    Line := aPNG.ScanLine[y];
+    for x := 0 to aPNG.Width - 1 do
+    begin
+      if (Line^[x].R=R) and (Line^[x].G=G)  and (Line^[x].B=B) then
+        Line^[x].A := 0 //100% see through
+      else
+        Line^[x].A := 255;
+    end;
+  end;
+end;
+
+
 procedure TD3DHook_FontMap.ChangeFont(font: TFont);
 var s: string;
     i: integer;
@@ -1132,6 +1173,10 @@ begin
     charpos:=charpos+charwidth;
   end;
 
+  //laz 1.6 makes 32bit png's 100% transparant
+  //so manually make it visible
+  FixAlpha(p.PNG);
+
   newblock:=pointer(owner.memman.alloc(localfontmapcopy.size));
 
 
@@ -1158,7 +1203,7 @@ begin
     end;
   end;
 
-  p.SaveToFile('c:\bla.png');
+ // p.SaveToFile('c:\bla.png');
 end;
 
 destructor TD3DHook_FontMap.destroy;
@@ -1380,7 +1425,7 @@ end;
 procedure TD3DHook.beginCommandListUpdate;
 begin
   if self=nil then
-    raise exception.create('The d3dhook object has not been created yet');
+    raise exception.create(rsTheD3dhookObjectHasNotBeenCreatedYet);
 
   commandlistCS.enter;
 
@@ -1553,12 +1598,12 @@ begin
 
   fmhandle:=OpenFileMapping(FILE_MAP_EXECUTE or FILE_MAP_READ or FILE_MAP_WRITE, false, pchar(sharename));
   if fmhandle=0 then
-    raise exception.create('D3DHook: Failure to open the shared memory object');
+    raise exception.create(rsD3DHookFailureToOpenTheSharedMemoryObject);
 
   shared:=MapViewOfFile(fmhandle,FILE_MAP_EXECUTE or FILE_MAP_READ or FILE_MAP_WRITE, 0,0,0 );
 
   if shared=nil then
-    raise exception.create('D3DHook: Failure to map the shared memory object');
+    raise exception.create(rsD3DHookFailureToMapTheSharedMemoryObject);
 
   alreadyhooked:=shared.initialized=$dbcedbce;
 

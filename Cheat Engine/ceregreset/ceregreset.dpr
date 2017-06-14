@@ -19,7 +19,28 @@ uses
   registry;
 
 
+procedure DeleteFullRegKey(reg: Tregistry; keyname: string);
+var i: integer;
+    r: Tregistry;
+    s: tstringlist;
+begin
+  r:=TRegistry.Create;
+  r.RootKey:=HKEY_CURRENT_USER;
+  if r.OpenKey(reg.CurrentPath+'\'+keyname, false) then
+  begin
+    s:=tstringlist.create;
+    r.GetKeyNames(s);
+    for i:=0 to s.count-1 do
+      DeleteFullRegKey(r, s[i]);
 
+    s.free;
+    r.free;
+  end;
+
+  reg.DeleteKey(keyname);
+end;
+
+procedure resetSettings;
 var reg: tregistry;
     silent: boolean;
     i,j: integer;
@@ -28,21 +49,23 @@ var reg: tregistry;
 
     deletecustomtypes: boolean;
     needsToSaveStuff: boolean;
+    deleteversioncheck: boolean;
     s: string;
 
     ki: TRegKeyInfo;
 begin
   silent:=false;
-  { TODO -oUser -cConsole Main : Insert code here }
 
   needsToSaveStuff:=false;
   deletecustomtypes:=true;
+  deleteversioncheck:=true;
 
 
   for i:=1 to ParamCount do
   begin
     if lowercase(ParamStr(i))='-silent' then silent:=true;
     if lowercase(ParamStr(i))='-dontdeletecustomtypes' then deletecustomtypes:=false;
+    if lowercase(ParamStr(i))='-dontdeleteversioncheck' then deleteversioncheck:=false;
   end;
 
   try
@@ -58,6 +81,10 @@ begin
       for i:=0 to names.count-1 do
       begin
         s:=names[i];
+
+        if (s='VersionCheck') and (deleteversioncheck=false) then continue;
+
+
         if (s='CustomTypes') then
         begin
           if reg.OpenKey(s,false) then
@@ -84,7 +111,7 @@ begin
             reg.DeleteKey(names[i]);
         end
         else
-        reg.DeleteKey(names[i]);
+          deleteFullRegKey(reg, names[i]);
       end;
 
 
@@ -106,5 +133,12 @@ begin
     if not silent then
       messagebox(0,'Couldn''t reset the settings','Registry Reset',0);
   end;
+end;
+
+
+
+
+begin
+  resetSettings;
 end.
  

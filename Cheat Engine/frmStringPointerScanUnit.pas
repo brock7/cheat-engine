@@ -212,46 +212,50 @@ type
   end;
 
   TfrmStringPointerScan = class(TForm)
-    btnScan: TButton;
     btnNewScan: TButton;
+    btnScan: TButton;
     cbCaseSensitive: TCheckBox;
+    cbHasShadow: TCheckBox;
     cbHasShadow2: TCheckBox;
     cbMustBeStart: TCheckBox;
     cbRegExp: TCheckBox;
     cbPointerInRange: TCheckBox;
     cbMapPointerValues: TCheckBox;
-    cbHasShadow: TCheckBox;
-    comboType: TComboBox;
+    cbReuseStringmap: TCheckBox;
     comboCompareType: TComboBox;
+    comboType: TComboBox;
+    edtBase: TEdit;
+    edtMaxLevel: TEdit;
     edtShadowAddress: TEdit;
     edtShadowAddress2: TEdit;
-    edtShadowSize: TEdit;
     edtPointerStart: TEdit;
     edtPointerStop: TEdit;
     edtAlignsize: TEdit;
     edtExtra: TEdit;
-    edtBase: TEdit;
-    edtMaxLevel: TEdit;
     edtRegExp: TEdit;
+    edtShadowSize: TEdit;
     edtShadowSize2: TEdit;
     edtStructsize: TEdit;
+    FindDialog1: TFindDialog;
+    lblBaseRegion: TLabel;
+    lblInfo: TLabel;
+    lblMaxLevel: TLabel;
     lblSize: TLabel;
     lblsize2: TLabel;
-    lblvds: TLabel;
-    lblBaseRegion: TLabel;
     lblStructsize: TLabel;
     lblCompare: TLabel;
     lblAlign: TLabel;
     lblAnd: TLabel;
     lblString: TLabel;
-    lblInfo: TLabel;
-    lblMaxLevel: TLabel;
     lblExtra: TLabel;
+    lblvds: TLabel;
     ListView1: TListView;
     MainMenu1: TMainMenu;
     MenuItem1: TMenuItem;
+    miFind: TMenuItem;
+    miFindNext: TMenuItem;
     miNewScan: TMenuItem;
-    MenuItem3: TMenuItem;
+    miOpen: TMenuItem;
     MenuItem4: TMenuItem;
     MenuItem7: TMenuItem;
     miClearCache: TMenuItem;
@@ -262,6 +266,11 @@ type
     Panel2: TPanel;
     Panel3: TPanel;
     Panel4: TPanel;
+    Panel5: TPanel;
+    Panel6: TPanel;
+    Panel7: TPanel;
+    Panel8: TPanel;
+    Panel9: TPanel;
     pmPointerfile: TPopupMenu;
     ProgressBar1: TProgressBar;
     rbDiffDontCare: TRadioButton;
@@ -278,17 +287,20 @@ type
     procedure comboTypeChange(Sender: TObject);
     procedure edtBaseChange(Sender: TObject);
     procedure edtExtraChange(Sender: TObject);
+    procedure FindDialog1Find(Sender: TObject);
     procedure FormClose(Sender: TObject; var CloseAction: TCloseAction);
     procedure FormShow(Sender: TObject);
     procedure ListView1CustomDrawItem(Sender: TCustomListView; Item: TListItem; State: TCustomDrawState; var DefaultDraw: Boolean);
 
     procedure ListView1Data(Sender: TObject; Item: TListItem);
     procedure ListView1DblClick(Sender: TObject);
+    procedure miFindClick(Sender: TObject);
     procedure miNewScanClick(Sender: TObject);
-    procedure MenuItem3Click(Sender: TObject);
+    procedure miOpenClick(Sender: TObject);
     procedure MenuItem7Click(Sender: TObject);
     procedure miClearCacheClick(Sender: TObject);
     procedure MenuItem6Click(Sender: TObject);
+    procedure Panel3Click(Sender: TObject);
     procedure rbDatascanChange(Sender: TObject);
     procedure rbDiffDontCareChange(Sender: TObject);
     procedure statusupdaterTimer(Sender: TObject);
@@ -315,12 +327,13 @@ type
     function pointerCompare(Tree: TAvgLvlTree; Data1, Data2: Pointer): integer;
     procedure cleanup;
     procedure OpenPointerfile(filename: string);
-    procedure scanDone(var m: tmessage); message wm_sps_done;
+    procedure scanDone;
 
     function getStringFromPointer(address: ptruint; offsets: TDwordArray; level, bytesize: integer; unicode: boolean; var a: ptruint): string;
+    procedure setGUIStateEnabled(state: boolean);
   public
     { public declarations }
-    procedure disableGui(control: TWinControl);
+    procedure disableGui;
     procedure enablegui;
   end;
 
@@ -629,7 +642,8 @@ begin
     v:=pointerfilereader.getByteFromAddress(a, error);
     result:=not error;
 
-    if result and (diffkind<>dkDontCare) then
+
+    if result and (address2<>0) then
     begin
       a:=pointerfilereader.getAddressFromPointerRecord(p, address2, shadow2, shadowsize2);
       if a<>0 then
@@ -637,7 +651,7 @@ begin
         v2:=pointerfilereader.getByteFromAddress(a, error);
         result:=not error;
 
-        if result then
+        if result and (diffkind<>dkDontcare) then
         begin
           if diffkind=dkMustBeDifferent then
             result:=v<>v2
@@ -664,7 +678,7 @@ begin
     v:=pointerfilereader.getWordFromAddress(a, error);
     result:=not error;
 
-    if result and (diffkind<>dkDontCare) then
+    if result and (address2<>0) then
     begin
       a:=pointerfilereader.getAddressFromPointerRecord(p, address2, shadow2, shadowsize2);
       if a<>0 then
@@ -672,7 +686,7 @@ begin
         v2:=pointerfilereader.getWordFromAddress(a, error);
         result:=not error;
 
-        if result then
+        if result and (diffkind<>dkDontCare) then
         begin
           if diffkind=dkMustBeDifferent then
             result:=v<>v2
@@ -699,7 +713,7 @@ begin
     v:=pointerfilereader.getDwordFromAddress(a, error);
     result:=not error;
 
-    if result and (diffkind<>dkDontCare) then
+    if result and (address2<>0) then
     begin
       a:=pointerfilereader.getAddressFromPointerRecord(p, address2, shadow2, shadowsize2);
       if a<>0 then
@@ -707,7 +721,7 @@ begin
         v2:=pointerfilereader.getDwordFromAddress(a, error);
         result:=not error;
 
-        if result then
+        if result and (diffkind<>dkDontCare) then
         begin
           if diffkind=dkMustBeDifferent then
             result:=v<>v2
@@ -734,7 +748,7 @@ begin
     v:=pointerfilereader.getQwordFromAddress(a, error);
     result:=not error;
 
-    if result and (diffkind<>dkDontCare) then
+    if result and (address2<>0) then
     begin
       a:=pointerfilereader.getAddressFromPointerRecord(p, address2, shadow2, shadowsize2);
       if a<>0 then
@@ -742,7 +756,7 @@ begin
         v2:=pointerfilereader.getQwordFromAddress(a, error);
         result:=not error;
 
-        if result then
+        if result and (diffkind<>dkDontCare) then
         begin
           if diffkind=dkMustBeDifferent then
             result:=v<>v2
@@ -769,7 +783,7 @@ begin
     v:=pointerfilereader.getSingleFromAddress(a, error);
     result:=not error;
 
-    if result and (diffkind<>dkDontCare) then
+    if result and (address2<>0) then
     begin
       a:=pointerfilereader.getAddressFromPointerRecord(p, address2, shadow2, shadowsize2);
       if a<>0 then
@@ -777,7 +791,7 @@ begin
         v2:=pointerfilereader.getSingleFromAddress(a, error);
         result:=not error;
 
-        if result then
+        if result and (diffkind<>dkDontCare) then
         begin
           if diffkind=dkMustBeDifferent then
             result:=v<>v2
@@ -804,7 +818,7 @@ begin
     v:=pointerfilereader.getDoubleFromAddress(a, error);
     result:=not error;
 
-    if result and (diffkind<>dkDontCare) then
+    if result and (address2<>0) then
     begin
       a:=pointerfilereader.getAddressFromPointerRecord(p, address2, shadow2, shadowsize2);
       if a<>0 then
@@ -812,7 +826,7 @@ begin
         v2:=pointerfilereader.getDoubleFromAddress(a, error);
         result:=not error;
 
-        if result then
+        if result and (diffkind<>dkDontCare) then
         begin
           if diffkind=dkMustBeDifferent then
             result:=v<>v2
@@ -839,7 +853,7 @@ begin
     v:=pointerfilereader.getPointerFromAddress(a, error);
     result:=not error;
 
-    if result and (diffkind<>dkDontCare) then
+    if result and (address2<>0) then
     begin
       a:=pointerfilereader.getAddressFromPointerRecord(p, address2, shadow2, shadowsize2);
       if a<>0 then
@@ -847,7 +861,7 @@ begin
         v2:=pointerfilereader.getPointerFromAddress(a, error);
         result:=not error;
 
-        if result then
+        if result and (diffkind<>dkDontCare) then
         begin
           if diffkind=dkMustBeDifferent then
             result:=v<>v2
@@ -927,20 +941,28 @@ begin
               passed:=false;
 
 
-            if passed and (diffkind<>dkDontCare) then
+            if passed and (address2<>0) then
             begin
               s2:=pointerfilereader.getStringFromPointerRecord(p, address2, shadow2, shadowsize2);
 
-              if diffkind=dkMustBeDifferent then
-                passed:=s<>s2
+              if (s2<>'') then
+              begin
+                if (diffkind<>dkDontCare) then
+                begin
+                  if diffkind=dkMustBeDifferent then
+                    passed:=s<>s2
+                  else
+                    passed:=s=s2;
+                end;
+              end
               else
-                passed:=s=s2;
+                passed:=false;
 
               if (passed) and (regex<>nil) then
               begin
                 index:=0;
                 len:=0;
-                passed:=RegExprPos(regex, pchar(s), index, len);
+                passed:=RegExprPos(regex, pchar(s2), index, len);
 
                 if passed and mustbestart then
                   passed:=index=0;
@@ -974,10 +996,12 @@ begin
     if pointerfilereader<>nil then
       freeandnil(pointerfilereader);
 
-    deletefile(outputfilename);
-    RenameFileUTF8(outputfilename+'.temp', outputfilename);
+    if deletefile(outputfilename)=false then
+      OutputDebugString('Failure deleting '+outputfilename);
 
-    PostMessage(ownerFrmStringPointerScan.Handle, wm_sps_done, 0,0);
+    RenameFile(outputfilename+'.temp', outputfilename);
+
+    Queue(TfrmStringPointerScan(ownerFrmStringPointerScan).scandone);
   end;
 
 
@@ -1025,7 +1049,7 @@ begin
     end;
   end;
 
-  deletefile(outputfilename+'.temp');
+
 
   outputfile:=TFileStream.Create(outputfilename+'.temp', fmCreate or fmShareDenyNone);
   outputfile.Free;     //so it can be reopened by other processes
@@ -1074,12 +1098,10 @@ begin
   begin
     if (shadow<>0) and (InRangeQ(address, baseaddress, baseaddress+shadowsize)) then
       address:=address+(shadow-baseaddress);
-
-
   end
   else
   begin
-    if (shadow2<>0) and (InRangeQ(address, baseaddress, baseaddress+shadowsize2)) then
+    if (shadow2<>0) and (InRangeQ(address, baseaddress2, baseaddress2+shadowsize2)) then
       address:=address+(shadow2-baseaddress2);
   end;
 
@@ -1358,6 +1380,19 @@ var x: ptruint;
   i: integer;
 begin
   result:=base+path[0];
+
+  if column=1 then
+  begin
+    if (shadow<>0) and (InRangeQ(result, baseaddress, baseaddress+shadowsize)) then
+      result:=result+(shadow-baseaddress);
+  end
+  else
+  begin
+    if (shadow2<>0) and (InRangeQ(result, baseaddress2, baseaddress2+shadowsize2)) then
+      result:=result+(shadow2-baseaddress2);
+  end;
+
+
   for i:=1 to level do
   begin
     result:=getPointerValue(result, column);
@@ -1442,8 +1477,12 @@ begin
   if value[0]=0 then exit; //marked as unreadable
   if value2[0]=0 then exit; //  "    "     "
 
+  if diffkind=dkDontCare then exit(true);
+
   value:=@value[1];
   value2:=@value2[1];
+
+
 
   if address=address2 then
   begin
@@ -1470,7 +1509,7 @@ end;
 function TScanner.addStringPath(level: integer; path: tpointerpath; stringsize: integer; unicode: BOOL): boolean;
 begin
   result:=false;
-  if (diffkind<>dkDontCare) and (not comparePath(level, path, stringsize)) then exit;
+  if (baseaddress2<>0) and (not comparePath(level, path, stringsize)) then exit;
 
 
   results.WriteBuffer(level, sizeof(level));
@@ -1504,8 +1543,9 @@ begin
   if shadow<>0 then
   begin
     if inrangeq(blockaddress, baseaddress, baseaddress+shadowsize) then
-        blockaddress:=blockaddress+(shadow-baseaddress);
+      blockaddress:=blockaddress+(shadow-baseaddress);
   end;
+
 
   if level>0 then
   begin
@@ -1609,7 +1649,7 @@ begin
 
   finally
     //reached the end, tell the main thread that the scan is done
-    PostMessage(OwnerFrmStringPointerScan.Handle, wm_sps_done, 0,0);
+    Queue(TfrmStringPointerScan(ownerFrmStringPointerScan).scandone);
   end;
 end;
 
@@ -1638,7 +1678,7 @@ begin
 
   self.ownerFrmStringPointerScan:=ownerFrmStringPointerScan;
 
-  if diffkind<>dkDontCare then
+  //if diffkind<>dkDontCare then
   begin
     case vartype of
       vtString: variablesize:=8; //string
@@ -1805,6 +1845,11 @@ begin
     MemoryBrowser.hexview.address:=pointerfilereader.getAddressFromPointerRecord(pointerfilereader.getPointerRec(listview1.Selected.Index), address, shadow, shadowsize2);
 end;
 
+procedure TfrmStringPointerScan.miFindClick(Sender: TObject);
+begin
+  finddialog1.execute;
+end;
+
 procedure TfrmStringPointerScan.OpenPointerfile(filename: string);
 var lc: TListColumn;
   i: integer;
@@ -1849,7 +1894,7 @@ begin
   btnScan.tag:=1;
 end;
 
-procedure TfrmStringPointerScan.scanDone(var m: tmessage);
+procedure TfrmStringPointerScan.scanDone;
 begin
   if scanner<>nil then
     lblInfo.caption:=rsSPSUFound+inttostr(scanner.count);
@@ -1969,30 +2014,26 @@ var baseaddress: ptruint;
 
   oldpointerfile: string;
 begin
+
   vartype:=vtPointer;
   if (scanner=nil) and (rescanner=nil) then
   begin
-    if pointerfilereader<>nil then
-      oldpointerfile:=pointerfilereader.filename
-    else
-      oldpointerfile:='';
-
-    cleanup;
-
-
     baseaddress:=symhandler.getAddressFromName(edtBase.text);
+    baseaddress2:=0;
 
+    shadow:=0;
+    shadowsize:=0;
+    shadow2:=0;
+    shadowsize2:=0;
 
+    pointerstart:=0;
+    pointerstop:=0;
+    alignsize:=4;
 
     if cbHasShadow.checked then
     begin
       shadow:=symhandler.getAddressFromName(edtShadowAddress.text);
       shadowsize:=strtoint(edtShadowSize.text);
-    end
-    else
-    begin
-      shadow:=0;
-      shadowsize:=0;
     end;
 
     if ((shadow<>0) and (not isreadable(shadow))) or
@@ -2009,16 +2050,9 @@ begin
       baseaddress2:=symhandler.getAddressFromName(edtExtra.text);
       if cbHasShadow2.checked then
       begin
-        shadow:=symhandler.getAddressFromName(edtShadowAddress2.text);
-        shadowsize:=strtoint(edtShadowSize2.text);
-      end
-      else
-      begin
-        shadow2:=0;
-        shadowsize2:=0;
+        shadow2:=symhandler.getAddressFromName(edtShadowAddress2.text);
+        shadowsize2:=strtoint(edtShadowSize2.text);
       end;
-
-
     end;
 
     if rbDatascan.checked then
@@ -2027,16 +2061,26 @@ begin
 
       if cbPointerInRange.checked then
       begin
-        pointerstart:=StrToQWordEx('$'+edtPointerStart.text);
-        pointerstop:=StrToQWordEx('$'+edtPointerStop.text);
+        pointerstart:=symhandler.getAddressFromName(edtPointerStart.text);
+        pointerstop:=symhandler.getAddressFromName(edtPointerStop.text);
       end;
     end;
 
     if savedialog1.execute then
     begin
+      if pointerfilereader<>nil then
+        oldpointerfile:=pointerfilereader.filename
+      else
+        oldpointerfile:='';
+
+      cleanup;
+
+
+
+
+
       //we got till this point so everything is fine, disable the gui
-      disableGui(panel1);
-      disablegui(Panel3);
+      disableGui;
 
       if rbMustBeSame.checked then
         diffkind:=dkMustBeSame
@@ -2046,19 +2090,22 @@ begin
       else
         diffkind:=dkDontCare;
 
-      if diffkind<>dkDontCare then
-      begin
-        case comboCompareType.itemindex of
-          0: vartype:=vtString;
-          1: vartype:=vtByte;
-          2: vartype:=vtWord;
-          3: vartype:=vtDword;
-          4: vartype:=vtQword;
-          5: vartype:=vtSingle;
-          6: vartype:=vtDouble;
-          7: vartype:=vtPointer;
-        end;
+      if diffkind=dkDontCare then
+        vartype:=vtByte
+      else
+      case comboCompareType.itemindex of
+        0: vartype:=vtString;
+        1: vartype:=vtByte;
+        2: vartype:=vtWord;
+        3: vartype:=vtDword;
+        4: vartype:=vtQword;
+        5: vartype:=vtSingle;
+        6: vartype:=vtDouble;
+        7: vartype:=vtPointer;
       end;
+
+      if rbStringscan.checked then
+          vartype:=vtString;
 
       if btnScan.tag=0 then //first scan
       begin
@@ -2070,20 +2117,27 @@ begin
 
         if rbStringscan.checked then
         begin
+          vartype:=vtString;
+
+          if (frmStringMap<>nil) and (cbReuseStringmap.checked=false) then
+            freeandnil(frmStringMap);
+
           if frmStringMap=nil then
+          begin
             frmStringMap:=tfrmStringMap.Create(application);
 
-          //fill the stringmap
+            //fill the stringmap
+            frmstringmap.cbRegExp.checked:=cbRegExp.checked;
+            frmstringmap.cbCaseSensitive.checked:=cbCaseSensitive.checked;
+            frmstringmap.cbMustBeStart.checked:=cbMustBeStart.checked;
+            frmstringmap.edtRegExp.text:=edtRegExp.text;
 
-          frmstringmap.cbRegExp.checked:=cbRegExp.checked;
-          frmstringmap.cbCaseSensitive.checked:=cbCaseSensitive.checked;
-          frmstringmap.cbMustBeStart.checked:=cbMustBeStart.checked;
-          frmstringmap.edtRegExp.text:=edtRegExp.text;
+            frmstringmap.btnScan.click;
+            lblInfo.caption:=rsGeneratingStringmap;
+            lblInfo.Repaint;
+            frmstringmap.scanner.WaitFor;
 
-          frmstringmap.btnScan.click;
-          lblInfo.caption:=rsGeneratingStringmap;
-          lblInfo.Repaint;
-          frmstringmap.scanner.WaitFor;
+          end;
 
         end;
         lblInfo.caption:=rsGeneratedScanning;
@@ -2098,14 +2152,11 @@ begin
       else
       begin
         //next scan aka Rescan
-        pointerfilereader:=TPointerfileReader.create(oldpointerfile);
-        pointerfilereader.vartype:=vartype;
-
         listview1.items.count:=0;
         rescanner:=trescan.create(false, address, address2, cbpointerinrange.checked, pointerstart, pointerstop, rbStringscan.checked, cbCaseSensitive.checked, cbMustBeStart.checked, edtRegExp.text, diffkind, vartype, oldpointerfile, savedialog1.filename , self);
-
       end;
       btnScan.caption:=rsStop;
+      btnScan.enabled:=true;
       progressbar1.visible:=true;
       statusupdater.enabled:=true;
     end;
@@ -2128,38 +2179,25 @@ end;
 
 procedure TfrmStringPointerScan.cbHasShadowChange(Sender: TObject);
 begin
-  if cbHasShadow.checked or cbHasShadow2.checked then
-  begin
-    panel3.height:=edtShadowSize.Top+edtShadowSize.Height+5;
-    edtShadowAddress.visible:=true;
-    edtShadowAddress2.Visible:=true;
-    lblSize.visible:=true;
-    edtShadowSize.visible:=true;
-    edtShadowSize2.visible:=true;
+
+
+    edtShadowAddress.visible:=cbHasShadow.checked or cbHasShadow2.checked;
+    edtShadowAddress2.Visible:=edtShadowAddress.visible;
+    lblSize.visible:=edtShadowAddress.visible;
+    lblSize2.visible:=edtShadowAddress.visible;
+    edtShadowSize.visible:=edtShadowAddress.visible;
+    edtShadowSize2.visible:=edtShadowAddress.visible;
     edtBaseChange(edtBase);
-  end
-  else
-  begin
-    panel3.height:=cbHasShadow.Top+cbHasShadow.Height+5;
-    edtShadowAddress.visible:=false;
-    edtShadowAddress2.visible:=false;
-    lblSize.visible:=false;
-    edtShadowSize.visible:=false;
-    edtShadowSize2.visible:=false;
+
     shadow:=0;
-  end;
-
-
-
-
 end;
 
 procedure TfrmStringPointerScan.cbRegExpChange(Sender: TObject);
 begin
-  cbCaseSensitive.enabled:=cbRegExp.checked;
-  cbMustBeStart.enabled:=cbRegExp.checked;
-  edtRegExp.enabled:=cbRegExp.checked;
-  lblString.enabled:=cbRegExp.checked;
+  cbCaseSensitive.enabled:=cbRegExp.enabled and cbRegExp.checked;
+  cbMustBeStart.enabled:=cbCaseSensitive.enabled;
+  edtRegExp.enabled:=cbCaseSensitive.enabled;
+  lblString.enabled:=cbCaseSensitive.enabled;
 end;
 
 procedure TfrmStringPointerScan.cbPointerInRangeChange(Sender: TObject);
@@ -2233,12 +2271,43 @@ begin
   rbDiffDontCare.enabled:=hasAddress2;
 
   try
-    address2:=StrToQword('$'+edtExtra.text);
+    address2:=symhandler.getAddressFromName(edtExtra.text);
     listview1.Refresh;
   except
   end;
 
   rbDiffDontCareChange(nil);
+end;
+
+procedure TfrmStringPointerScan.FindDialog1Find(Sender: TObject);
+var
+  i,start: integer;
+  s: string;
+  FindText: string;
+  cs: boolean;
+begin
+  FindText:=finddialog1.FindText;
+  if FindText='' then exit;
+
+  miFindNext.enabled:=true;
+
+  cs:=frMatchCase in finddialog1.Options;
+  if not cs then findtext:=uppercase(findtext);
+
+  for i:=listview1.ItemIndex+1 to listview1.Items.Count-1 do
+  begin
+    s:=listview1.items[i].SubItems.Text;
+    if not cs then s:=uppercase(s);
+
+    if pos(FindText, s)>0 then
+    begin
+      listview1.ItemIndex:=i;
+      listview1.Items[i].MakeVisible(false);
+      exit;
+    end;
+  end;
+
+  beep;
 end;
 
 procedure TfrmStringPointerScan.FormClose(Sender: TObject; var CloseAction: TCloseAction);
@@ -2248,6 +2317,7 @@ end;
 
 procedure TfrmStringPointerScan.FormShow(Sender: TObject);
 begin
+  //panel1.Constraints.MinHeight:=btnNewScan.Top+btnNewScan.Height+lblInfo.Height+4;
   cbHasShadowChange(nil);
 end;
 
@@ -2294,12 +2364,11 @@ begin
   end;
 end;
 
-procedure TfrmStringPointerScan.MenuItem3Click(Sender: TObject);
+procedure TfrmStringPointerScan.miOpenClick(Sender: TObject);
 begin
   if (scanner=nil) and (rescanner=nil) and OpenDialog1.Execute then
   begin
     OpenPointerfile(opendialog1.filename);
-    disablegui(Panel1);
     enablegui;
   end;
 
@@ -2324,27 +2393,31 @@ begin
 
 end;
 
+procedure TfrmStringPointerScan.Panel3Click(Sender: TObject);
+begin
+
+end;
+
 procedure TfrmStringPointerScan.rbDatascanChange(Sender: TObject);
 begin
-  cbRegExp.enabled:=rbStringscan.checked;
-  cbCaseSensitive.enabled:=rbStringscan.checked and cbRegExp.checked;
-  cbMustBeStart.enabled:=rbStringscan.checked and cbRegExp.checked;
-  lblString.enabled:=rbStringscan.checked and cbRegExp.checked;
-  edtRegExp.enabled:=rbStringscan.checked and cbRegExp.checked;
+  cbRegExp.enabled:=rbStringscan.enabled and rbStringscan.checked;
+  cbCaseSensitive.enabled:=cbRegExp.enabled and rbStringscan.checked and cbRegExp.checked;
+  cbMustBeStart.enabled:=cbCaseSensitive.enabled;
+  lblString.enabled:=cbCaseSensitive.enabled;
+  edtRegExp.enabled:=cbCaseSensitive.enabled;
 
-  lblAlign.enabled:=rbDatascan.checked;
-  edtAlignsize.enabled:=rbDatascan.checked;
-  edtPointerStart.enabled:=rbDatascan.checked and cbPointerInRange.checked;
-  lblAnd.enabled:=rbDatascan.checked and cbPointerInRange.checked;
-  edtPointerStop.enabled:=rbDatascan.checked and cbPointerInRange.checked;
+  lblAlign.enabled:=rbDatascan.enabled and rbDatascan.checked;
+  edtAlignsize.enabled:=lblAlign.enabled;
+  edtPointerStart.enabled:=cbPointerInRange.enabled and cbPointerInRange.checked;
+  lblAnd.enabled:=edtPointerStart.enabled;
+  edtPointerStop.enabled:=edtPointerStart.enabled;
 end;
 
 procedure TfrmStringPointerScan.rbDiffDontCareChange(Sender: TObject);
 begin
-  lblCompare.enabled:=rbDiffDontCare.checked = false;
-  comboCompareType.enabled:=rbDiffDontCare.checked = false;
-
-  cbMapPointerValues.Enabled:=rbDiffDontCare.checked = false;
+  lblCompare.enabled:=rbDiffDontCare.enabled and (rbDiffDontCare.checked = false);
+  comboCompareType.enabled:=lblCompare.enabled;
+  cbMapPointerValues.Enabled:=comboCompareType.enabled;
 end;
 
 procedure TfrmStringPointerScan.statusupdaterTimer(Sender: TObject);
@@ -2382,58 +2455,53 @@ begin
 
 end;
 
-procedure TfrmStringPointerScan.disableGui(control: TWinControl);
-var i: integer;
+procedure TfrmStringPointerScan.setGUIStateEnabled(state: boolean);
 begin
-  for i:=0 to control.ControlCount-1 do
-  begin
-    if control.Controls[i]<>btnScan then
-      control.Controls[i].enabled:=false;
+  lblBaseRegion.enabled:=state;
+  lblExtra.enabled:=state;
 
-    if (control.Controls[i] is TWinControl) then
-      disableGui(TWinControl(control.Controls[i]));
-  end;
+  cbPointerInRange.enabled:=state;
+  cbPointerInRange.OnChange(cbPointerInRange);
 
+  lblBaseRegion.enabled:=state;
+  lblExtra.enabled:=state;
+  lblvds.enabled:=state;
+
+  edtBase.enabled:=state;
+  edtExtra.enabled:=state;
+  edtExtra.OnChange(edtExtra); //makes the difftypes enabled or not
+
+  rbDatascan.enabled:=state;
+  rbStringscan.enabled:=state;
+
+  cbRegExpChange(rbStringscan);
+  comboType.enabled:=state;
+
+  rbDatascanChange(Nil);
+
+  cbHasShadow.enabled:=state;
+  cbHasShadow2.enabled:=state;
+
+  edtShadowAddress.Enabled:=state;
+  edtShadowAddress2.enabled:=state;
+
+  edtShadowSize.enabled:=state;
+  edtShadowSize2.enabled:=state;
+
+  lblSize.enabled:=state;
+  lblSize2.enabled:=state;
+
+  btnScan.enabled:=state;
+end;
+
+procedure TfrmStringPointerScan.disableGui;
+begin
+  setGUIStateEnabled(false);
 end;
 
 procedure TfrmStringPointerScan.enableGui;
 begin
-  panel4.enabled:=true;
-  lblBaseRegion.enabled:=true;
-  lblExtra.enabled:=true;
-
-  cbPointerInRange.enabled:=true;
-  cbPointerInRange.OnChange(cbPointerInRange);
-
-  lblBaseRegion.enabled:=true;
-  lblExtra.enabled:=true;
-  lblvds.enabled:=true;
-
-  edtBase.enabled:=true;
-  edtExtra.enabled:=true;
-  edtExtra.OnChange(edtExtra); //makes the difftypes enabled or not
-
-  rbDatascan.enabled:=true;
-  rbStringscan.enabled:=true;
-
-  cbRegExpChange(rbStringscan);
-  comboType.enabled:=true;
-
-  rbDatascanChange(Nil);
-
-  cbHasShadow.enabled:=true;
-  cbHasShadow2.enabled:=true;
-
-  edtShadowAddress.Enabled:=true;
-  edtShadowAddress2.enabled:=true;
-
-  edtShadowSize.enabled:=true;
-  edtShadowSize2.enabled:=true;
-
-  lblSize.enabled:=true;
-  lblSize2.enabled:=true;
-
-  btnScan.enabled:=true;
+  setGUIStateEnabled(true);
 end;
 
 initialization

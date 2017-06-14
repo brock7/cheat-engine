@@ -9,8 +9,8 @@ uses LCLIntf,sysutils, classes,ComCtrls, graphics, CEFuncProc, disassembler,
      disassemblerComments, SymbolListHandler, ProcessHandlerUnit;
 
 type
-  TDisassemblerViewColorsState=(csUndefined=-1, csNormal=0, csHighlighted=1, csSecondaryHighlighted=2, csBreakpoint=3, csHighlightedbreakpoint=4, csSecondaryHighlightedbreakpoint=5);
-  TDisassemblerViewColors=array [csNormal..csSecondaryHighlightedbreakpoint] of record
+  TDisassemblerViewColorsState=(csUndefined=-1, csNormal=0, csHighlighted=1, csSecondaryHighlighted=2, csBreakpoint=3, csHighlightedbreakpoint=4, csSecondaryHighlightedbreakpoint=5, csUltimap=6, csHighlightedUltimap=7, csSecondaryHighlightedUltimap=8);
+  TDisassemblerViewColors=array [csNormal..csSecondaryHighlightedUltimap] of record
     backgroundcolor: TColor;
     normalcolor: TColor;
     registercolor: TColor;
@@ -30,6 +30,7 @@ type
     fheight: integer; //height of the line
     fDefaultHeight: integer; //the normal height without anything extra
     fInstructionCenter: integer; //y position of the center of the disassembled line (so no header)
+
     isselected: boolean;
 
     faddress: ptrUint;
@@ -55,12 +56,12 @@ type
 
     refferencedByStart: integer;
 
-    isbp: boolean;
+    isbp,isultimap: boolean;
     focused: boolean;
 
     function truncatestring(s: string; maxwidth: integer): string;
     procedure buildReferencedByString(sl: tstringlist);
-    procedure DrawTextRectWithColor(const ARect: TRect; X, Y: integer; const Text: string);
+    function DrawTextRectWithColor(const ARect: TRect; X, Y: integer; const Text: string): integer;
   public
 
 
@@ -72,13 +73,14 @@ type
     function getTop: integer;
     property description:string read fdescription;
     property disassembled:string read fdisassembled;
-    procedure renderLine(var address: ptrUint; linestart: integer; selected: boolean=false; focused: boolean=false);
+    procedure renderLine(var address: ptrUint; linestart: integer; selected: boolean=false; focused: boolean=false; spaceAboveLines:integer=0; spaceBelowLines:integer=0);
     procedure drawJumplineTo(yposition: integer; offset: integer; showendtriangle: boolean=true);
     procedure handledisassemblerplugins(addressStringPointer: pointer; bytestringpointer: pointer; opcodestringpointer: pointer; specialstringpointer: pointer; textcolor: PColor);
     constructor create(owner: TObject; bitmap: TBitmap; headersections: THeaderSections; colors: PDisassemblerViewColors);
     destructor destroy; override;
 
   published
+
     property height: integer read fheight;
     property top: integer read fTop;
     property defaultHeight: integer read fDefaultHeight;
@@ -89,7 +91,9 @@ end;
 
 implementation
 
-uses MemoryBrowserFormUnit, dissectCodeThread,debuggertypedefinitions, dissectcodeunit, disassemblerviewunit;
+uses
+  MemoryBrowserFormUnit, dissectCodeThread,debuggertypedefinitions,
+  dissectcodeunit, disassemblerviewunit, frmUltimap2Unit;
 
 resourcestring
   rsUn = '(Unconditional)';
@@ -102,17 +106,22 @@ resourcestring
 procedure TDisassemblerLine.drawJumplineTo(yposition: integer; offset: integer; showendtriangle: boolean=true);
 var
   oldpenstyle: Tpenstyle;
+  oldpenwidth: integer;
   oldpencolor, oldbrushcolor: TColor;
-begin
+  jlThickness: integer;
 
+  triangleheight: integer;
+begin
+  jlThickness:=TDisassemblerview(owner).jlThickness;
 
   oldpenstyle:=fCanvas.Pen.Style;
+  oldpenwidth:=fcanvas.pen.Width;
   oldpencolor:=fCanvas.Pen.color;
   oldbrushcolor:=fCanvas.Brush.color;
 
   fCanvas.Pen.Color:=fjumpcolor;
   fCanvas.Pen.Style:=psDot;
-
+  fcanvas.Pen.Width:=jlThickness;
 
   fCanvas.PenPos:=point(fHeaders.items[2].Left,instructioncenter);
   fCanvas.LineTo(fHeaders.items[2].Left-offset,instructioncenter);
@@ -122,9 +131,11 @@ begin
   fCanvas.Pen.Style:=oldpenstyle;
   if showendtriangle then
   begin
+    triangleheight:=defaultHeight div 4;
+
     fCanvas.Brush.Style:=bsSolid; //should be the default, but in case something fucked with it (not in the planning, never intended, so even if someone did do it, I'll undo it)
     fCanvas.Brush.Color:=fjumpcolor;
-    fCanvas.Polygon([point(fheaders.items[2].Left-4,yposition-4),point(fheaders.items[2].Left,yposition),point(fheaders.items[2].Left-4,yposition+4)]);
+    fCanvas.Polygon([point(fheaders.items[2].Left-triangleheight,yposition-triangleheight),point(fheaders.items[2].Left,yposition),point(fheaders.items[2].Left-triangleheight,yposition+triangleheight)]);
   end;
   fCanvas.Brush.Color:=oldbrushcolor;
   fCanvas.Pen.Color:=oldpencolor;
@@ -218,7 +229,7 @@ begin
   end;
 end;
 
-procedure TDisassemblerLine.renderLine(var address: ptrUint; linestart: integer; selected: boolean=false; focused: boolean=false);
+procedure TDisassemblerLine.renderLine(var address: ptrUint; linestart: integer; selected: boolean=false; focused: boolean=false; spaceAboveLines:integer=0; spaceBelowLines:integer=0);
 var
     baseofsymbol: qword;
     symbolname: string;
@@ -249,7 +260,12 @@ var
 
     found :boolean;
     extrasymboldata: TExtraSymbolData;
+
+    iscurrentinstruction: boolean;
+
 begin
+
+  iscurrentinstruction:=MemoryBrowser.lastdebugcontext.{$ifdef cpu64}rip{$else}EIP{$endif}=address;
 
   self.focused:=focused;
 
@@ -275,7 +291,6 @@ begin
 
   isselected:=selected;
 
-
   refferencedbystrings:=nil;
   fheight:=0;
   baseofsymbol:=0;
@@ -292,6 +307,11 @@ begin
 
 
 
+  if iscurrentinstruction then
+    visibleDisassembler.context:=@MemoryBrowser.lastdebugcontext
+  else
+    visibleDisassembler.context:=nil;
+
   fdisassembled:=visibleDisassembler.disassemble(address,fdescription);
 
   addressstring:=inttohex(visibleDisassembler.LastDisassembleData.address,8);
@@ -300,6 +320,10 @@ begin
 
   parameterstring:=visibleDisassembler.LastDisassembleData.parameters+' ';
   specialstring:=visibleDisassembler.DecodeLastParametersToString;
+
+  if iscurrentinstruction and visibleDisassembler.LastDisassembleData.isconditionaljump and visibleDisassembler.LastDisassembleData.willJumpAccordingToContext then
+    parameterstring:=parameterstring+'  ---> ';
+
 
 
   //userdefined comments
@@ -328,7 +352,7 @@ begin
     addressString:=truncatestring(addressString, fHeaders.Items[0].Width-2);
 
   bytestring:=truncatestring(bytestring, fHeaders.Items[1].Width-2);
-  opcodestring:=truncatestring(opcodestring, fHeaders.Items[2].Width-2);
+  //opcodestring:=truncatestring(opcodestring, fHeaders.Items[2].Width-2);
   //specialstring:=truncatestring(specialstring, fHeaders.Items[3].Width-2);
 
 
@@ -343,7 +367,6 @@ begin
   fheight:=fheight+boldheight+1;
   fDefaultHeight:=fHeight;   //the height without anything special
 
-
   //calculate how big the comments are. (beyond the default height)
   for i:=1 to specialstrings.count-1 do
     inc(fHeight, fcanvas.textHeight(specialstrings[i]));
@@ -351,6 +374,8 @@ begin
   //calculae the custom headersize
   for i:=0 to customheaderstrings.count-1 do
     inc(fheight, fCanvas.TextHeight(customheaderstrings[i]));
+
+  inc(fHeight, spaceAboveLines+spaceBelowLines);
 
   if ExtraLineRenderAbove<>nil then
   begin
@@ -425,24 +450,19 @@ begin
 
   if fisJump then
   begin
-    cefuncproc.isjumporcall(faddress, fJumpsTo);
+    fisjump:=cefuncproc.isjumporcall(faddress, fJumpsTo);
+
 
     if visibleDisassembler.LastDisassembleData.iscall then
-      fjumpcolor:=clYellow
+      fjumpcolor:= TDisassemblerview(owner).jlCallColor
     else
     begin
       if visibleDisassembler.LastDisassembleData.isconditionaljump then
-        fjumpcolor:=clRed
+        fjumpcolor:=TDisassemblerview(owner).jlConditionalJumpColor
       else
-        fjumpcolor:=clGreen;
+        fjumpcolor:=TDisassemblerview(owner).jlUnConditionalJumpColor ;
     end;
   end;
-
-
-
-
-
-
 
 
   if debuggerthread<>nil then
@@ -452,7 +472,10 @@ begin
 
 
   isbp:=(bp<>nil) and (bp.breakpointTrigger=bptExecute) and (bp.active) and (bp.markedfordeletion=false);
-  
+  isultimap:=(frmUltimap2<>nil) and frmUltimap2.IsMatchingAddress(faddress);
+
+
+
   if selected then
   begin
     if not isbp then
@@ -460,13 +483,29 @@ begin
       //default
       if not focused then
       begin
-        fcanvas.Brush.Color:=fcolors^[csSecondaryHighlighted].backgroundcolor;
-        fcanvas.Font.Color:=fcolors^[csSecondaryHighlighted].normalcolor;
+        if isultimap then
+        begin
+          fcanvas.Brush.Color:=fcolors^[csSecondaryHighlightedUltimap].backgroundcolor;
+          fcanvas.Font.Color:=fcolors^[csSecondaryHighlightedUltimap].normalcolor;
+        end
+        else
+        begin
+          fcanvas.Brush.Color:=fcolors^[csSecondaryHighlighted].backgroundcolor;
+          fcanvas.Font.Color:=fcolors^[csSecondaryHighlighted].normalcolor;
+        end;
       end
       else
       begin
-        fcanvas.Brush.Color:=fcolors^[csHighlighted].backgroundcolor;
-        fcanvas.Font.Color:=fcolors^[csHighlighted].normalcolor;
+        if isultimap then
+        begin
+          fcanvas.Brush.Color:=fcolors^[csHighlightedUltimap].backgroundcolor;
+          fcanvas.Font.Color:=fcolors^[csHighlightedUltimap].normalcolor;
+        end
+        else
+        begin
+          fcanvas.Brush.Color:=fcolors^[csHighlighted].backgroundcolor;
+          fcanvas.Font.Color:=fcolors^[csHighlighted].normalcolor;
+        end;
       end;
     end
     else
@@ -487,17 +526,28 @@ begin
     begin
       fCanvas.Brush.Color:=fcolors^[csbreakpoint].backgroundcolor;
       fCanvas.font.Color:=fcolors^[csbreakpoint].normalcolor;
-      fcanvas.Refresh
     end else
     begin
-      fCanvas.Brush.Color:=fcolors^[csNormal].backgroundcolor;
-      fCanvas.font.Color:=fcolors^[csNormal].normalcolor;
-      fcanvas.Refresh
+      if isultimap then
+      begin
+        fCanvas.Brush.Color:=fcolors^[csUltimap].backgroundcolor;
+        fCanvas.font.Color:=fcolors^[csUltimap].normalcolor;
+      end
+      else
+      begin
+        fCanvas.Brush.Color:=fcolors^[csNormal].backgroundcolor;
+        fCanvas.font.Color:=fcolors^[csNormal].normalcolor;
+      end;
+
     end;
+
+    fcanvas.Refresh
   end;
 
   //height may not change after this
   fcanvas.FillRect(rect(0,top,fbitmap.width,top+height));
+
+  inc(linestart, spaceAboveLines);
 
   if ExtraLineRenderAbove<>nil then
   begin
@@ -593,7 +643,7 @@ begin
 
 
 
-  if MemoryBrowser.lastdebugcontext.{$ifdef cpu64}rip{$else}EIP{$endif}=faddress then
+  if iscurrentinstruction then
     addressString:='>>'+addressString;
 
 
@@ -621,21 +671,20 @@ begin
   fcanvas.font.color:=textcolor;
 
 
-  fcanvas.TextRect(rect(fHeaders.Items[0].Left, linestart, fHeaders.Items[0].Right, linestart+height), fHeaders.Items[0].Left+1,linestart, AnsiToUtf8(paddressString));
-  fcanvas.TextRect(rect(fHeaders.Items[1].Left, linestart, fHeaders.Items[1].Right, linestart+height),fHeaders.Items[1].Left+1,linestart, AnsiToUtf8(pbytestring));
+  fcanvas.TextRect(rect(fHeaders.Items[0].Left, linestart, fHeaders.Items[0].Right, linestart+height), fHeaders.Items[0].Left+1,linestart, paddressString);
+  fcanvas.TextRect(rect(fHeaders.Items[1].Left, linestart, fHeaders.Items[1].Right, linestart+height),fHeaders.Items[1].Left+1,linestart, pbytestring);
 
   fcanvas.font.Style:=fcanvas.font.Style+[fsBold];
-  fcanvas.TextRect(rect(fHeaders.Items[2].Left, linestart, fHeaders.Items[2].Right, linestart+height),fHeaders.Items[2].Left+1,linestart, AnsiToUtf8(popcodestring));
+  i:=DrawTextRectWithColor(rect(fHeaders.Items[2].Left, linestart, fHeaders.Items[2].Right, linestart+height),fHeaders.Items[2].Left+1,linestart, popcodestring);
   fcanvas.font.Style:=fcanvas.font.Style-[fsBold];
 
-  i:=fcanvas.TextWidth(popcodestring+'  ');
+  inc(i, fcanvas.TextWidth('  '));
   j:=fcanvas.textwidth('XXXXXXX');
 
   if i>j then
     i:=fHeaders.Items[2].Left+1+i+fcanvas.textwidth(' ')
   else
     i:=fHeaders.Items[2].Left+1+j;
-
 
   DrawTextRectWithColor(rect(fHeaders.Items[2].Left, linestart, fHeaders.Items[2].Right, linestart+height),i,linestart, parameterstring);
   fInstructionCenter:=linestart+(fcanvas.TextHeight(opcodestring) div 2);
@@ -662,7 +711,7 @@ begin
   end;
 
 
-  if focused then
+  if focused and (tdisassemblerview(fowner).hidefocusrect=false) then
       fcanvas.DrawFocusRect(rect(0,top,fbitmap.width,top+height));
 
   if selected then //restore
@@ -674,45 +723,99 @@ begin
 
   if refferencedbystrings<>nil then
     refferencedbystrings.free;
+
+
 end;
 
-procedure TDisassemblerLine.DrawTextRectWithColor(const ARect: TRect; X, Y: integer; const Text: string);
-var defaultfontcolor: TColor;
+function TDisassemblerLine.DrawTextRectWithColor(const ARect: TRect; X, Y: integer; const Text: string): integer;
+var defaultfontcolor, defaultbrushcolor: TColor;
     i: integer;
-    start: integer;
+    start,startx: integer;
 
-    s: string;
+    s,s2: string;
 
-    colorcode: integer; //0=normal, 1=hex, 2=reg, 3=symbol
+    colorcode: integer; //0=normal, 1=hex, 2=reg, 3=symbol 4=rgb
+    bcolorcode: integer; //0=normal, 1=rgb
+    rgbcolor: integer;
+    brgbcolor: integer;
     colorstate: TDisassemblerViewColorsState;
+
+    ts: TTextStyle;
 
   procedure setcolor;
   begin
-    if (not isselected and not isbp) then colorstate:=csNormal else
-    if (not isselected and isbp) then colorstate:=csBreakpoint else
-    if (isselected and not isbp and focused) then colorstate:=csHighlighted else
-    if (isselected and not isbp and not focused) then colorstate:=csSecondaryHighlighted else
-    if (isselected and isbp and focused) then colorstate:=csHighlightedbreakpoint else
-    if (isselected and isbp and not focused) then colorstate:=csSecondaryHighlightedbreakpoint;
+    if isselected then
+    begin
+      if isbp then
+        colorstate:=csSecondaryHighlightedbreakpoint
+      else
+      if isultimap then
+        colorstate:=csSecondaryHighlightedUltimap
+      else
+        colorstate:=csSecondaryHighlighted;
+
+      if focused then
+      begin
+        if isbp then
+          colorstate:=csHighlightedbreakpoint
+        else
+        if isultimap then
+          colorstate:=csHighlightedUltimap
+        else
+          colorstate:=csHighlighted;
+      end;
+    end
+    else
+    begin
+      if isbp then
+        colorstate:=csBreakpoint
+      else
+      if isultimap then
+        colorstate:=csUltimap
+      else
+        colorstate:=csNormal;
+    end;
 
     case colorcode of
       0: fcanvas.font.color:=fcolors^[colorstate].normalcolor;
       1: fcanvas.font.color:=fcolors^[colorstate].hexcolor;
       2: fcanvas.font.color:=fcolors^[colorstate].registercolor;
       3: fcanvas.font.color:=fcolors^[colorstate].symbolcolor;
+      4: fcanvas.font.color:=rgbcolor;
+    end;
+
+    case bcolorcode of
+      0:
+      begin
+        ts:=fcanvas.TextStyle;
+        ts.Opaque:=true;
+        fcanvas.TextStyle:=ts;
+        fcanvas.Brush.color:=defaultbrushcolor;
+      end;
+      1:
+      begin
+        ts:=fcanvas.TextStyle;
+        ts.Opaque:=true;
+        fcanvas.TextStyle:=ts;
+
+        fcanvas.Brush.color:=brgbcolor;
+      end;
     end;
   end;
 
 begin
+  defaultbrushcolor:=fcanvas.Brush.color;
   defaultfontcolor:=fcanvas.Font.color;
   start:=1;
+  startx:=x;
   s:='';
   i:=1;
   colorcode:=0;
+  bcolorcode:=0;
 
   if processhandler.SystemArchitecture=archx86 then
   begin
-    while i<length(text) do
+    while i<=length(text) do
     begin
       case text[i] of
         '{':
@@ -724,13 +827,29 @@ begin
           x:=x+fcanvas.TextWidth(s);
 
           inc(i);
-          while i<length(text) do
+          while i<=length(text) do
           begin
             case text[i] of
-              'N': colorcode:=0;
+              'N':
+              begin
+                colorcode:=0;
+                bcolorcode:=0;
+              end;
               'H': colorcode:=1;
               'R': colorcode:=2;
               'S': colorcode:=3;
+              'B': //followed by RRGGBB colorcode
+              begin
+                s2:=copy(text, i+1,6);
+                if trystrtoint('$'+s2, brgbcolor) then bcolorcode:=1;
+                inc(i,6);
+              end;
+              'C': //followed by RRGGBB colorcode
+              begin
+                s2:=copy(text, i+1,6);
+                if trystrtoint('$'+s2, rgbcolor) then colorcode:=4;
+                inc(i,6);
+              end;
               '}':
               begin
                 inc(i);
@@ -760,6 +879,10 @@ begin
   fcanvas.TextRect(ARect,x,y,AnsiToUtf8(s));
 
   fcanvas.Font.color:=defaultfontcolor;
+  fcanvas.brush.color:=defaultbrushcolor;
+
+  x:=x+fcanvas.TextWidth(s);
+  result:=x-startx;
 end;
 
 procedure TDisassemblerLine.handledisassemblerplugins(addressStringPointer: pointer; bytestringpointer: pointer; opcodestringpointer: pointer; specialstringpointer: pointer; textcolor: PColor);

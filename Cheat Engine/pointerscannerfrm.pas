@@ -56,6 +56,7 @@ type
     tempbuffer: TMemoryStream;
 
     novaluecheck: boolean;
+    filterOutAccessible: boolean;
     PointerAddressToFind: ptrUint;
     forvalue: boolean;
     valuetype: TVariableType;
@@ -69,6 +70,8 @@ type
     mustbeinrange: boolean;
     baseStart: ptruint;
     baseEnd: ptruint;
+
+    offsetBase: ptrint;
 
     startOffsetValues: array of dword;
     endoffsetvalues: array of dword;
@@ -130,10 +133,13 @@ type
     baseStart: ptruint;
     baseEnd: ptruint;
 
+    offsetBase: ptrint;
+
     startOffsetValues: array of dword;
     endoffsetvalues: array of dword;
 
     novaluecheck: boolean; //when set to true the value and final address are not compared, just check that he final address is in fact readable
+    filterOutAccessible: boolean; //when set to true, final address should be not accessible
     useluafilter: boolean; //when set to true each pointer will be passed on to the luafilter function
     luafilter: string; //function name of the luafilter
 
@@ -165,6 +171,9 @@ type
     lblPassword: TLabel;
     lblThreadPriority: TLabel;
     lblProgressbar1: TLabel;
+    MenuItem1: TMenuItem;
+    miDisconnect: TMenuItem;
+    miForceDisconnect: TMenuItem;
     miExportTosqlite: TMenuItem;
     MenuItem2: TMenuItem;
     miImportFromsqlite: TMenuItem;
@@ -187,6 +196,7 @@ type
     Pointerscanner1: TMenuItem;
     Method3Fastspeedandaveragememoryusage1: TMenuItem;   //I should probably rename this, it's not really, 'average memory usage' anymore...
     N1: TMenuItem;
+    miInfoPopup: TPopupMenu;
     ProgressBar1: TProgressBar;
     Rescanmemory1: TMenuItem;
     SaveDialog1: TSaveDialog;
@@ -212,11 +222,16 @@ type
 
     procedure FormDestroy(Sender: TObject);
     procedure FormResize(Sender: TObject);
+    procedure FormShow(Sender: TObject);
     procedure lvResultsColumnClick(Sender: TObject; Column: TListColumn);
     procedure lvResultsResize(Sender: TObject);
+    procedure MenuItem1Click(Sender: TObject);
+    procedure miDisconnectClick(Sender: TObject);
+    procedure miForceDisconnectClick(Sender: TObject);
     procedure miExportTosqliteClick(Sender: TObject);
     procedure miImportFromsqliteClick(Sender: TObject);
     procedure miCreatePSNnodeClick(Sender: TObject);
+    procedure miInfoPopupPopup(Sender: TObject);
     procedure miMergePointerscanResultsClick(Sender: TObject);
     procedure miResumeClick(Sender: TObject);
     procedure miSetWorkFolderClick(Sender: TObject);
@@ -383,7 +398,6 @@ resourcestring
   rsPSExporting = 'Exporting...';
   rsPSThisDatabaseDoesntContainAnyPointerFiles = 'This database does not contain any pointer files';
   rsPSInvalidDatabase = 'Invalid database';
-  rsPSSelectPtridFromPointerFilesWhereName = 'Select ptrid from pointerfiles where name="';
   rsPSThereIsAlreadyaPointerFileWithThsiNamePresentinThisDatabase = 'There is already a pointerfile with this name present in this database. Replace it''s content with this one ?';
   rsPSExportAborted = 'Export aborted';
   rsPSImporting = 'Importing...';
@@ -424,6 +438,8 @@ resourcestring
   rsPSREscanning = 'Rescanning';
   rsPSFindByAddressPart1 = 'Find by address requires an address. "';
   rsPSFindByAddressPart2 = '" is not a valid address';
+  rsAreYouSureYouWishYouForceADisconnect = 'Are you sure you wish you force a disconnect. The current paths will be lost';
+  rsCEInjectedPointerscan = 'CE Injected Pointerscan';
 
 //----------------------- scanner info --------------------------
 //----------------------- staticscanner -------------------------
@@ -711,8 +727,10 @@ var
   config: Tfilestream;
   maxlevel: integer;
   structsize: integer;
+  totalpathsevaluated: qword;
   compressedptr: boolean;
   unalligned: boolean;
+  staticonly: boolean;
   noloop: boolean;
   muststartwithbase: boolean;
   LimitToMaxOffsetsPerNode:boolean;
@@ -753,9 +771,10 @@ begin
 
     maxlevel:=config.ReadDWord;
     structsize:=config.ReadDWord;
-   // totalpathsevaluated:=config.ReadQWord; //IGNORED
+    totalpathsevaluated:=config.ReadQWord; //IGNORED
     compressedptr:=config.ReadByte=1;
     unalligned:=config.ReadByte=1;
+    staticonly:=config.ReadByte=1;
     noloop:=config.ReadByte=1;
     muststartwithbase:=config.ReadByte=1;
     LimitToMaxOffsetsPerNode:=config.ReadByte=1;
@@ -788,6 +807,7 @@ begin
       for i:=0 to length(instantrescanentries)-1 do
         f.instantrescanfiles.AddObject(instantrescanentries[i].filename, tobject(instantrescanentries[i].address));
 
+    new1.Click;
     if f.showmodal=mrOK then
     begin
       threadcount:=f.threadcount;
@@ -796,7 +816,7 @@ begin
         instantrescanentries[i].filename:=f.instantrescanfiles[i];
 
 
-      new1.click;
+      //new1.click;
 
       //default scan
       staticscanner:=TPointerscanController.Create(true);
@@ -813,11 +833,16 @@ begin
       lvResults.Visible:=false;
 
 
+      if lblProgressbar1.Height>progressbar1.Height then
+        ProgressBar1.Height:=lblProgressbar1.height;
+
+      lblProgressbar1.Top:=progressbar1.Top+(progressbar1.height div 2)-(lblProgressbar1.Height div 2);
 
 
       pnlProgress.Visible:=true;
 
       try
+        staticscanner.initializer:=true;
         staticscanner.OnStartScan:=PointerscanStart;
         staticscanner.OnScanDone:=PointerscanDone;
         staticscanner.threadcount:=threadcount;
@@ -826,6 +851,7 @@ begin
         staticscanner.sz:=structsize;
         staticscanner.compressedptr:=compressedptr;
         staticscanner.unalligned:=unalligned;
+        staticscanner.staticonly:=staticonly;
         staticscanner.noLoop:=noloop;
         staticscanner.mustStartWithBase:=muststartwithbase;
         staticscanner.LimitToMaxOffsetsPerNode:=LimitToMaxOffsetsPerNode;
@@ -861,6 +887,7 @@ begin
 
           pb.left:=ProgressBar1.left;
           pb.width:=ProgressBar1.width;
+          pb.height:=Progressbar1.Height;
           pb.Anchors:=ProgressBar1.Anchors;
 
           lb:=TLabel.create(self);
@@ -875,6 +902,8 @@ begin
 
 
           pnlProgress.ClientHeight:=pb.Top+pb.height+1;
+          if pnlProgressname.clientwidth<lb.width then
+            pnlProgressName.ClientWidth:=lb.width+10;
 
         end;
 
@@ -931,6 +960,7 @@ begin
     frmpointerscannersettings:=tfrmpointerscannersettings.create(application);
 
   if frmpointerscannersettings.Visible then exit; //already open, so no need to make again
+
 
   if SkipNextScanSettingsWasTrue or (frmpointerscannersettings.Showmodal=mrok) then
   begin
@@ -1050,12 +1080,6 @@ begin
       staticscanner.progressbar:=progressbar1;
       staticscanner.threadcount:=frmpointerscannersettings.threadcount;
       staticscanner.scannerpriority:=frmpointerscannersettings.scannerpriority;
-       {
-      staticscanner.distributedScanning:=frmpointerscannersettings.cbDistributedScanning.checked;
-      staticscanner.distributedport:=frmpointerscannersettings.distributedPort;
-
-      staticscanner.broadcastThisScanner:=frmpointerscannersettings.cbBroadcast.checked;
-      staticscanner.potentialWorkerList:=frmpointerscannersettings.resolvediplist;    }
 
 
       staticscanner.mustStartWithBase:=frmpointerscannersettings.cbMustStartWithBase.checked;
@@ -1113,6 +1137,8 @@ begin
 
 
             pnlProgress.ClientHeight:=pb.Top+pb.height+1;
+            if pnlProgressname.clientwidth<lb.width then
+              pnlProgressName.ClientWidth:=lb.width+10;
           end;
         end;
 
@@ -1211,6 +1237,54 @@ begin
     l:=max(120,l);
     lvResults.Columns[lvResults.columns.count-1].Width:=l;
   end;
+end;
+
+procedure Tfrmpointerscanner.MenuItem1Click(Sender: TObject);
+var
+  i: integer;
+  s: tstringlist;
+begin
+  if pointerscanresults<>nil then
+  begin
+    s:=tstringlist.create;
+    for i:=0 to pointerscanresults.modulelistCount-1 do
+      s.add(inttohex(pointerscanresults.modulebase[i],8)+' = '+pointerscanresults.modulename[i]);
+
+    showmessage(s.text);
+    s.free;
+  end;
+
+end;
+
+procedure Tfrmpointerscanner.miDisconnectClick(Sender: TObject);
+var childid: integer;
+begin
+  if (tvinfo.Selected<>nil) and (tvinfo.Selected.Data<>nil) then
+  begin
+    childid:=ptruint(tvinfo.Selected.Data);
+
+    if Staticscanner<>nil then
+      Staticscanner.disconnectChild(childid, false);
+
+    miForceDisconnect.Enabled:=true;
+  end;
+end;
+
+procedure Tfrmpointerscanner.miForceDisconnectClick(Sender: TObject);
+var childid: integer;
+begin
+  //disconnect this one
+
+  if MessageDlg(rsAreYouSureYouWishYouForceADisconnect, mtWarning, [mbyes, mbno], 0, mbNo)<>mryes then exit;
+
+  if (tvinfo.Selected<>nil) and (tvinfo.Selected.Data<>nil) then
+  begin
+    childid:=ptruint(tvinfo.Selected.Data);
+
+    if Staticscanner<>nil then
+      Staticscanner.disconnectChild(childid, true);
+  end;
+
 end;
 
 procedure Tfrmpointerscanner.miExportTosqliteClick(Sender: TObject);
@@ -1324,6 +1398,8 @@ begin
       SQLQuery.SQL.Text:='Select ptrid from pointerfiles where name="'+name+'"';
       SQLQuery.Active:=true;
 
+      //SQLQuery.Params;
+
       if SQLQuery.RecordCount>0 then
       begin
         ptrid:=SQLQuery.FieldByName('ptrid').text;
@@ -1351,6 +1427,10 @@ begin
       lblProgressbar1.Caption:=rsPSExporting;
       progressbar1.position:=0;
       progressbar1.max:=100;
+      if lblProgressbar1.Height>progressbar1.Height then
+        ProgressBar1.Height:=lblProgressbar1.height;
+
+      lblProgressbar1.Top:=progressbar1.Top+(progressbar1.height div 2)-(lblProgressbar1.Height div 2);
       pnlProgress.visible:=true;
 
       Update;
@@ -1645,6 +1725,12 @@ begin
     lblProgressbar1.Caption:=rsPSImporting;
     progressbar1.position:=0;
     progressbar1.max:=100;
+
+    if lblProgressbar1.Height>progressbar1.Height then
+     ProgressBar1.Height:=lblProgressbar1.height;
+
+    lblProgressbar1.Top:=progressbar1.Top+(progressbar1.height div 2)-(lblProgressbar1.Height div 2);
+
     pnlProgress.visible:=true;
 
     Update;
@@ -1826,6 +1912,12 @@ begin
   f.free;
 end;
 
+procedure Tfrmpointerscanner.miInfoPopupPopup(Sender: TObject);
+begin
+  miDisconnect.Visible:=(tvinfo.Selected<>nil) and (tvinfo.Selected.Data<>nil);
+  miForceDisconnect.Visible:=(tvinfo.Selected<>nil) and (tvinfo.Selected.Data<>nil);
+end;
+
 procedure Tfrmpointerscanner.miMergePointerscanResultsClick(Sender: TObject);
 begin
 
@@ -1894,6 +1986,8 @@ begin
       4: scannerpriority:=tpHigher;
       5: scannerpriority:=tpHighest;
       6: scannerpriority:=tpTimeCritical;
+      else
+        scannerpriority:=tpNormal;
     end;
 
     staticscanner.changeWorkerPriority(scannerpriority);
@@ -1914,6 +2008,18 @@ end;
 procedure Tfrmpointerscanner.FormResize(Sender: TObject);
 begin
   btnStopRescanLoop.Left:=(clientwidth div 2) - (btnStopRescanLoop.Width div 2);
+end;
+
+procedure Tfrmpointerscanner.FormShow(Sender: TObject);
+var i: integer;
+begin
+  btnIncreaseThreadCount.autosize:=false;
+  btnDecreaseThreadCount.autosize:=false;
+
+  i:=max( btnIncreaseThreadCount.width, btnDecreaseThreadCount.width);
+  i:=max(i, pnlControl.ClientWidth-2);
+  btnIncreaseThreadCount.width:=i;
+  btnDecreaseThreadCount.width:=i;
 end;
 
 procedure Tfrmpointerscanner.lvResultsColumnClick(Sender: TObject; Column: TListColumn);
@@ -2284,6 +2390,7 @@ begin
           end;
 
           infonodes.network.connectedToNodes[i].node.Text:=s;
+          infonodes.network.connectedToNodes[i].node.Data:=pointer(ptruint(connectionlist[i].childid));
 
           with infonodes.network.connectedToNodes[i].data do
           begin
@@ -2400,6 +2507,8 @@ begin
     vtDword: result:=pdword(p)^=valuescandword;
     vtSingle: result:=(psingle(p)^>=valuescansingle) and (psingle(p)^<=valuescansinglemax);
     vtDouble: result:=(pdouble(p)^>=valuescandouble) and (pdouble(p)^<=valuescandoublemax);
+    else
+      result:=false;
   end;
 end;
 
@@ -2426,6 +2535,7 @@ var
     pi: TPageInfo;
     x: dword;
     valid: boolean;
+    rangeAndStartOffsetsEndOffsets_Valid: boolean;
 
     tempvalue: pointer;
     value: pointer;
@@ -2448,14 +2558,7 @@ begin
     if useluafilter then
     begin
       //create a new lua thread
-      luacs.enter;
-      try
-        l:=lua_newthread(luavm); //pushes the thread on the luavm stack.
-        lref:=luaL_ref(luavm,LUA_REGISTRYINDEX); //add a reference so the garbage collector wont destroy the thread (pops the thread off the stack)
-      finally
-        luacs.leave;
-      end;
-
+      L:=GetLuaState;
 
       lua_getglobal(L, pchar(luafilter));
       lfun:=lua_gettop(L);
@@ -2490,6 +2593,7 @@ begin
       while evaluated < self.EntriesToCheck do
       begin
         p:=Pointerscanresults.getPointer(currentEntry);
+
         if p<>nil then
         begin
           valid:=true;
@@ -2503,10 +2607,15 @@ begin
           else
             address:=pointermap.getAddressFromModuleIndexPlusOffset(p.modulenr,p.moduleoffset);
 
-          baseaddress:=address;
+
+
+
 
           if address>0 then
           begin
+            inc(address, offsetBase);
+            baseaddress:=address;
+
             //if the base must be in a range then check if the base address is in the given range
             if (not mustbeinrange) or (inrangex(address, baseStart, baseEnd)) then
             begin
@@ -2538,6 +2647,8 @@ begin
                 end;
               end;
 
+              rangeAndStartOffsetsEndOffsets_Valid:=valid;
+
               if valid then
               begin
                 //evaluate the pointer to address
@@ -2561,7 +2672,7 @@ begin
 
                         pi:=rescanhelper.FindPage((address shr 12)+1);
                         if pi.data<>nil then
-                          copymemory(pointer(ptruint(@address)+k), @pi.data[0], pointersize-k)
+                          copymemory(pointer(ptruint(@tempaddress)+k), @pi.data[0], pointersize-k)
                         else
                         begin
                           valid:=false;
@@ -2603,7 +2714,16 @@ begin
                 end;
               end;
 
-              if valid then
+              //mgr.inz.Player patch:
+              //if everything until "evaluate the pointer to address" was fine
+              //and user wants all valid (false positive valid) pointers to be removed
+              //(so, wants to keep with final address not evaluated), invert valid status.
+              //Also, do not check final address readability and do not compare address/value.
+
+              if filterOutAccessible and rangeAndStartOffsetsEndOffsets_Valid then
+                valid:=not valid;
+
+              if (not filterOutAccessible) and valid then
               begin
                 if novaluecheck or forvalue then
                 begin
@@ -2705,18 +2825,7 @@ begin
         freeandnil(tempbuffer);
 
       if l<>nil then
-      begin
         lua_settop(L, 0);
-
-        //remove the reference to the thread
-        luacs.enter;
-        try
-          luaL_unref(LuaVM, LUA_REGISTRYINDEX, lref);
-        finally
-          luacs.leave;
-        end;
-
-      end;
 
       done:=true;
 
@@ -2841,6 +2950,7 @@ begin
       rescanworkers[i].pointermap:=pointermap;
       rescanworkers[i].PointerAddressToFind:=self.address;
       rescanworkers[i].novaluecheck:=novaluecheck;
+      rescanworkers[i].filterOutAccessible:=filterOutAccessible;
 
       rescanworkers[i].forvalue:=forvalue;
       rescanworkers[i].valuesize:=valuesize;
@@ -2874,6 +2984,7 @@ begin
 
       rescanworkers[i].useluafilter:=useluafilter;
       rescanworkers[i].luafilter:=luafilter;
+      rescanworkers[i].offsetBase:=offsetBase;
 
 
       threadhandles[i]:=rescanworkers[i].Handle;
@@ -2995,15 +3106,6 @@ begin
   if rescan<>nil then
     freeandnil(rescan);
 
-  rescan:=trescanpointers.create(true);
-  rescan.ownerform:=self;
-  rescan.progressbar:=progressbar1;
-
-  lblProgressbar1.caption:=rsPSREscanning;
-  pnlProgress.visible:=true;
-
-
-
 
   try
     if rescanpointerform=nil then
@@ -3011,11 +3113,35 @@ begin
 
     with rescanpointerform do
     begin
+
+      cbChangeBasePointerOffset.visible:=pointerscanresults.DidBaseRangeScan;
+      pnlRangeOffset.visible:=cbChangeBasePointerOffset.visible;
+
+      if pointerscanresults.DidBaseRangeScan then
+      begin
+        lblOriginalBase.Caption:=inttohex(pointerscanresults.BaseScanRange,8);
+        edtNewBase.Text:=inttohex(pointerscanresults.BaseScanRange,8);
+      end;
+
+
       if ((not rescanpointerform.canceled) and rescanpointerform.cbRepeat.checked) or (showmodal=mrok) then
       begin
         if ((savedialog1.filename<>'') and rescanpointerform.cbRepeat.checked) or savedialog1.Execute then
         begin
+          rescan:=trescanpointers.create(true);
+          rescan.ownerform:=self;
+          rescan.progressbar:=progressbar1;
+
           rescan.novaluecheck:=cbNoValueCheck.checked;
+          rescan.filterOutAccessible:=cbfilterOutAccessible.checked;
+
+          lblProgressbar1.caption:=rsPSREscanning;
+          if lblProgressbar1.Height>progressbar1.Height then
+           ProgressBar1.Height:=lblProgressbar1.height;
+
+          lblProgressbar1.Top:=progressbar1.Top+(progressbar1.height div 2)-(lblProgressbar1.Height div 2);
+
+          pnlProgress.visible:=true;
 
 
           if cbUseSavedPointermap.checked then
@@ -3038,6 +3164,9 @@ begin
             rescan.pointermapprogressbarlabel.showhint:=true;
 
             pnlProgress.ClientHeight:=rescan.pointermapprogressbar.Top+rescan.pointermapprogressbar.height+1;
+
+            if pnlProgressname.clientwidth<rescan.pointermapprogressbarlabel.width then
+              pnlProgressName.ClientWidth:=rescan.pointermapprogressbarlabel.width+10;
 
           end;
 
@@ -3090,7 +3219,7 @@ begin
           Rescanmemory1.Enabled:=false;
           new1.Enabled:=false;
 
-          if cbNoValueCheck.checked=false then
+          if (cbNoValueCheck.checked=false) and (cbfilterOutAccessible.checked=false) then
           begin
             if rbFindAddress.Checked then
             begin
@@ -3166,6 +3295,7 @@ begin
 
           rescan.originalptrfile:=Pointerscanresults.filename;
 
+          rescan.offsetBase:=offset;
 
 
 
@@ -3242,8 +3372,6 @@ begin
         if pnlProgressBar.Controls[i]<>Progressbar1 then
           pnlProgressBar.Controls[i].Visible:=false;
       end;
-
-      pnlProgress.height:=ProgressBar1.height+1;
 
       ProgressBar1.visible:=true;
       Progressbar1.Position:=0;
@@ -3332,6 +3460,7 @@ begin
   open1.Enabled:=true;
   new1.enabled:=true;
   rescanmemory1.Enabled:=false;
+  miResume.enabled:=false;
 
   lvResults.Items.BeginUpdate;
   lvResults.columns.BeginUpdate;
@@ -3348,6 +3477,9 @@ begin
   if Pointerscanresults<>nil then
     freeandnil(Pointerscanresults);
 
+  new1.enabled:=false;
+
+  caption:=rsPointerScan;
 end;
 
 
@@ -3365,7 +3497,7 @@ begin
 
 
   {$ifdef injectedpscan}
-  caption:='CE Injected Pointerscan';
+  caption:=rsCEInjectedPointerscan;
   {$endif}
   lvResults.DoubleBuffered:=true;
 

@@ -8,7 +8,7 @@ interface
 
 uses jwawindows, windows, classes,LCLIntf,imagehlp,{psapi,}sysutils, cefuncproc,
   newkernelhandler,syncobjs, SymbolListHandler, fgl, typinfo, cvconst, PEInfoFunctions,
-  DotNetPipe, DotNetTypes, commonTypeDefs, math;
+  DotNetPipe, DotNetTypes, commonTypeDefs, math, LazUTF8, contnrs;
 {$endif}
 
 {$ifdef unix}
@@ -241,6 +241,7 @@ type
     procedure EnumerateUserdefinedSymbols(list:tstrings);
 
     function ParseAsPointer(s: string; list:tstrings): boolean;
+    function ParseRange(s: string; var start: QWORD; var stop: QWORD): boolean;
     function GetAddressFromPointer(s: string; var error: boolean):ptrUint;
 
     function LookupStructureOffset(s: string; out offset: integer): boolean;
@@ -288,11 +289,33 @@ procedure unregisterAddressLookupCallback(id: integer);
 
 
 {$ifdef windows}
+type TSTACKFRAME_EX = record
+        AddrPC : TADDRESS64;
+        AddrReturn : TADDRESS64;
+        AddrFrame : TADDRESS64;
+        AddrStack : TADDRESS64;
+        AddrBStore : TADDRESS64;
+        FuncTableEntry : POINTER;
+        Params : array[0..3] of DWORD64;
+        Far : BOOL;
+        Virtual : BOOL;
+        Reserved : array[0..2] of DWORD64;
+        KdHelp : TKDHELP64;
+        StackFrameSize: DWORD;
+        InlineFrameContext: DWORD;
+     end;
+
+  PStackframe_ex=^TSTACKFRAME_EX;
+
+
 type TSymFromName=function(hProcess: HANDLE; Name: LPSTR; Symbol: PSYMBOL_INFO): BOOL; stdcall;
 type TSymFromAddr=function(hProcess:THANDLE; Address:dword64; Displacement:PDWORD64; Symbol:PSYMBOL_INFO):BOOL;stdcall;
 
 var SymFromName: TSymFromName;
     SymFromAddr: TSymFromAddr;
+
+    StackWalkEx:function(MachineType:dword; hProcess:THANDLE; hThread:THANDLE; StackFrame:PStackframe_ex; ContextRecord:pointer; ReadMemoryRoutine:TREAD_PROCESS_MEMORY_ROUTINE64; FunctionTableAccessRoutine:TFUNCTION_TABLE_ACCESS_ROUTINE64; GetModuleBaseRoutine:TGET_MODULE_BASE_ROUTINE64; TranslateAddress:TTRANSLATE_ADDRESS_ROUTINE64; flags: dword):bool;stdcall;
+
 {$endif}
 
 procedure symhandlerInitialize;
@@ -302,7 +325,7 @@ implementation
 {$ifdef windows}
 uses assemblerunit, driverlist, LuaHandler, lualib, lua, lauxlib,
   disassemblerComments, StructuresFrm2, networkInterface, networkInterfaceApi,
-  processhandlerunit, Globals, Parsers, MemoryQuery;
+  processhandlerunit, Globals, Parsers, MemoryQuery, LuaCaller;
 {$endif}
 
 {$ifdef unix}
@@ -371,7 +394,12 @@ begin
   id:=id and $1FFFFFFF;
 
   if id<length(SymbolLookupCallbacks[cbp]) then
+  begin
+    {$ifdef windows}
+    CleanupLuaCall(TMethod(SymbolLookupCallbacks[cbp][id]));
+    {$endif}
     SymbolLookupCallbacks[cbp][id]:=nil;
+  end;
 end;
 
 function registerAddressLookupCallback(callback: TAddressLookupCallback): integer;
@@ -394,7 +422,12 @@ end;
 procedure unregisterAddressLookupCallback(id: integer);
 begin
   if id<length(AddressLookupCallbacks) then
+  begin
+    {$ifdef windows}
+    CleanupLuaCall(TMethod(AddressLookupCallbacks[id]));
+    {$endif}
     AddressLookupCallbacks[id]:=nil;
+  end;
 end;
 
 
@@ -441,10 +474,12 @@ begin
         end;
       finally
         freemem(modulename);
+        modulename:=nil;
       end;
     end;
   finally
     freemem(x);
+    x:=nil;
   end;
 
   {$endif}
@@ -474,10 +509,12 @@ begin
         end;
       finally
         freemem(drivername);
+        drivername:=nil;
       end;
     end;
   finally
     freemem(x);
+    x:=nil;
   end;
   {$ENDIF}
 end;
@@ -730,16 +767,13 @@ var
   s: string;
   self: TSymbolloaderthread;
 
-  x: DWORD;
-  type_symtag: Tsymtagenum;
-
   isparam: boolean;
 
   esde: TExtraSymbolDataEntry;
 begin
   {$IFNDEF UNIX}
   if pSymInfo.NameLen=0 then
-    exit;
+    exit(false);
 
   self:=TSymbolloaderthread(UserContext);
 
@@ -784,9 +818,9 @@ begin
 
       ZeroMemory(@c, sizeof(c));
       c.InstructionOffset:=self.extraSymbolData.symboladdress;
-      SymSetContext(self.thisprocesshandle, @c, NULL);
+      SymSetContext(self.thisprocesshandle, @c, nil);
 
-      SymEnumSymbols(self.thisprocesshandle, 0, NULL, @ES2, self);
+      SymEnumSymbols(self.thisprocesshandle, 0, nil, @ES2, self);
 
       self.extraSymbolData.filledin:=true;
     end;
@@ -799,12 +833,6 @@ var
   self: TSymbolloaderthread;
   s: string;
   sym: PCESymbolInfo;
-
-  tempstring: pchar;
-  x: dword;
-  i: integer;
-
-  pSymInfo2:PSYMBOL_INFO;
 
   ExtraSymbolData: TExtraSymbolData;
 begin
@@ -855,8 +883,6 @@ begin
   result:=true;
 end;
 
-var test: boolean;
-
 function EM(ModuleName:PSTR; BaseOfDll:dword64; UserContext:pointer):bool;stdcall;
 var self: TSymbolloaderthread;
     mi: tmoduleinfo;
@@ -873,7 +899,7 @@ begin
 
  // result:=SymEnumTypes(self.thisprocesshandle, baseofdll, @ET, self);
 
-  result:=(self.terminated=false) and (SymEnumSymbols(self.thisprocesshandle, baseofdll, NULL, @ES, self));
+  result:=(self.terminated=false) and (SymEnumSymbols(self.thisprocesshandle, baseofdll, nil, @ES, self));
 
   //mark this module as loaded
 
@@ -917,16 +943,10 @@ var sp: pchar;
     c: TCEConnection;
 
     mpl: Tstringlist;
-    i,j,k,l,m: integer;
+    i,j: integer;
 
     dotNetdomains: TDotNetDomainArray;
     dotNetmodules: TDotNetModuleArray;
-    dotnettypedefs: TDotNetTypeDefArray;
-    dotnetmethods: TDotNetMethodArray;
-
-    address:qword;
-    size: integer;
-    name: string;
 
 
 
@@ -1034,6 +1054,9 @@ begin
 
         SymbolsLoaded:=SymInitialize(thisprocesshandle, sp, true);
 
+        if symbolsloaded=false then
+          SymbolsLoaded:=SymInitialize(thisprocesshandle, sp, false);
+
         if symbolsloaded then
         begin
           symsetoptions(symgetoptions or SYMOPT_CASE_INSENSITIVE);
@@ -1109,6 +1132,7 @@ begin
           fprogress:=ceil((i/modulecount)*100);
 
           freemem(modinfo);
+          modinfo:=nil;
         end;
 
 
@@ -1496,7 +1520,6 @@ begin
 end;
 
 procedure TSymhandler.Waitforsymbolsloaded(apisymbolsonly: boolean=false; specificmodule: string='');
-var checkcondition: pboolean;
 begin
   symbolloadervalid.beginread;
 
@@ -1592,7 +1615,11 @@ begin
       }
       if (globalallocpid<>processid) or (globalalloc=nil) or (globalallocsizeleft<size) then //new alloc
       begin
+        {$ifdef windows}
         base:=FindFreeBlockForRegion(preferedaddress,max(65536,size));
+        {$else}
+        base:=0;
+        {$endif}
 
         globalalloc:=virtualallocex(processhandle,base,max(65536,size),MEM_COMMIT or MEM_RESERVE , PAGE_EXECUTE_READWRITE);
         globalallocpid:=processid;
@@ -1627,7 +1654,7 @@ begin
         if (globalallocpid<>processid) or (globalalloc=nil) or (globalallocsizeleft<size) then //new alloc
         begin
           globalallocpid:=processid;
-          globalalloc:=virtualallocex(processhandle,FindFreeBlockForRegion(preferedaddress,max(65536,size)),max(65536,size),MEM_COMMIT or MEM_RESERVE , PAGE_EXECUTE_READWRITE);
+          globalalloc:=virtualallocex(processhandle,{$ifdef windows}FindFreeBlockForRegion(preferedaddress,max(65536,size)){$else}0{$endif},max(65536,size),MEM_COMMIT or MEM_RESERVE , PAGE_EXECUTE_READWRITE);
           globalallocsizeleft:=max(65536,size);
         end;
 
@@ -2101,24 +2128,10 @@ end;
 function TSymhandler.getNameFromAddress(address:ptrUint;symbols:boolean; modules: boolean; baseaddress: PUINT64=nil; found: PBoolean=nil; hexcharsize: integer=8):string;
 var //symbol :PSYMBOL_INFO;
     offset: qword;
-    s: string;
     mi: tmoduleinfo;
     si: PCESymbolInfo;
-    processhandle: thandle;
     i: integer;
 begin
-{$ifdef windows}
-  if targetself then
-  begin
-    processhandle:=getcurrentprocess;
-  end
-  else
-{$endif}
-  begin
-    processhandle:=processhandlerunit.ProcessHandle;
-  end;
-
-
   for i:=0 to length(AddressLookupCallbacks)-1 do
   begin
     if assigned(AddressLookupCallbacks[i]) then
@@ -2313,16 +2326,11 @@ type TCalculation=(calcAddition, calcSubstraction);
 var mi: tmoduleinfo;
     si: PCESymbolInfo;
     offset: integer;
-    i,j: integer;
-
-    slcindex: integer;
+    i,j,k: integer;
 
     p: pchar;
     ws: widestring;
     pws: pwidechar;
-    error: boolean;
-
-    processhandle: thandle;
 
     tokens: TTokens;
     mathstring: string;
@@ -2333,8 +2341,16 @@ var mi: tmoduleinfo;
 
     //symbol: PSYMBOL_INFO;
     s: string;
-    a: ptruint;
+    a,br: ptruint;
+
+    pointerstartlist: array of integer;
+    pointerstartpos,pointerstartmax: integer;
 begin
+  pointerstartpos:=0;
+  pointerstartmax:=16;
+  setlength(pointerstartlist,pointerstartmax);
+
+  hasMultiplication:=false;
   name:=trim(name);
   hasPointer:=false;
   haserror:=false;
@@ -2353,8 +2369,8 @@ begin
       if i=0 then exit; //it's a hexadecimal string starting with a $
 
 
-
       {$IFNDEF UNIX}
+      (*
       //check if lua thingy
       i:=lua_gettop(luavm); //make sure the stack ends here when done
 
@@ -2363,36 +2379,45 @@ begin
 
       if i<>lua_gettop(luavm) then
       begin
-        j:=lua_type(LuaVM, -1);
-        if j=0 then beep;
-
-
-
-
-        if lua_isuserdata(LuaVM, -1) then
+        if lua_isnil(LuaVM,-1) then
         begin
-          result:=ptruint(lua_toceuserdata(Luavm, -1));
+          //try a lua function call
+
           lua_settop(luavm, i);
+
+          if lua_dostring(Luavm,pchar('return '+s))<>0 then
+          begin
+            lua_settop(luavm, i);
+            lua_pushnil(Luavm);
+          end;
+        end;
+
+        j:=lua_type(LuaVM, i+1);
+
+        if lua_isuserdata(LuaVM, i+1) then
+        begin
+          result:=ptruint(lua_toceuserdata(Luavm, i+1));
+          lua_settop(luavm, i+1);
           exit;
         end
         else
-        if (j<>LUA_TSTRING) and (lua_isnumber(LuaVM, -1)) then
+        if (j<>LUA_TSTRING) and (lua_isnumber(LuaVM, i+1)) then
         begin
-          result:=lua_tointeger(LuaVM, -1);
-          lua_settop(luavm, i);
+          result:=lua_tointeger(LuaVM, i+1);
+          lua_settop(luavm, i+1);
           exit;
         end
         else
-        if lua_isstring(LuaVM, -1) then
+        if lua_isstring(LuaVM, i+1) then
         begin
-          p:=lua_tostring(LuaVM, -1);
+          p:=lua_tostring(LuaVM, i+1);
           if (p<>nil) then name:=p;
         end;
 
 
 
         lua_settop(luavm, i);
-      end;
+      end;    *)
       {$ENDIF}
 
 
@@ -2400,19 +2425,6 @@ begin
 
     end;
   end;
-
-  {$ifdef windows}
-  if targetself then
-  begin
-    processhandle:=getcurrentprocess;
-  end
-  else
-  {$endif}
-  begin
-    processhandle:=processhandlerunit.ProcessHandle;
-  end;
-
-
 
   val('$'+name,result,i);
   if i=0 then exit; //it's a valid hexadecimal string
@@ -2449,7 +2461,6 @@ begin
 
   symbolloadervalid.beginread;
   try
-
     for i:=0 to length(tokens)-1 do
     begin
       if not (tokens[i][1] in ['[',']','+','-','*']) then
@@ -2510,6 +2521,8 @@ begin
               end;
 
               //not handled, but since it's a register, quit now
+              hasError:=true;
+              exit(0);
             end
             else
             {$ENDIF}
@@ -2632,11 +2645,59 @@ begin
                   continue;
                 end;
 
-
-
-
               end;
             end;
+
+            //check if it's lua (old style)
+            if tokens[i][1]='$' then
+            begin
+              //try lua
+              j:=lua_gettop(luavm); //make sure the stack ends here when done
+              try
+                s:=copy(tokens[i], 2, length(tokens[i]));
+                lua_getglobal(LuaVM,pchar(s));
+                if lua_isnil(luavm,-1) then //not found as a single global var
+                begin
+                  lua_settop(luavm,j);
+                  //try lua function call method
+
+                  if lua_dostring(Luavm,pchar('return '+s))<>0 then
+                  begin
+                    lua_settop(luavm, j);
+                    lua_pushnil(Luavm);
+                  end;
+                end;
+
+                //convert the result to a hexstring
+                k:=lua_type(LuaVM, j+1);
+
+                if lua_isuserdata(LuaVM, j+1) then
+                begin
+                  tokens[i]:=inttohex(ptruint(lua_toceuserdata(Luavm, j+1)),8);
+                  continue;
+                end
+                else
+                if (k<>LUA_TSTRING) and (lua_isnumber(LuaVM, j+1)) then
+                begin
+                  tokens[i]:=inttohex(lua_tointeger(LuaVM, j+1),8);
+                  continue;
+                end
+                else
+                if lua_isstring(LuaVM, j+1) then
+                begin
+                  s:=lua_tostring(LuaVM, j+1);
+                  if pos('$',s)=0 then //prevent inf lua loops
+                  begin
+                    tokens[i]:=inttohex(getAddressFromName(s),8);
+                    continue;
+                  end;
+                end;
+              finally
+                lua_settop(luavm,j);
+              end;
+
+            end;
+
 
             //not a register or symbol
             result:=callbackCheck(tokens[i], slNotSymbol);
@@ -2675,7 +2736,61 @@ begin
         //it's not a real token
         case tokens[i][1] of
           '*' : hasMultiplication:=true;
-          '[',']': hasPointer:=true;
+          '[':
+          begin
+            hasPointer:=true;
+
+            pointerstartlist[pointerstartpos]:=i;
+            inc(pointerstartpos);
+            if pointerstartpos>=pointerstartmax then
+            begin
+              pointerstartmax:=pointerstartmax*2;
+              setlength(pointerstartlist, pointerstartmax);
+            end;
+
+          end;
+
+          ']':
+          begin
+            if haspointer then
+            begin
+              //parse since the last pointerstart
+              s:='';
+              if pointerstartpos=0 then
+              begin
+                haserror:=true;
+                exit;
+              end;
+
+              dec(pointerstartpos);
+              k:=pointerstartlist[pointerstartpos];
+
+              for j:=k+1 to i-1 do
+              begin
+                s:=s+tokens[j];
+                tokens[j]:='';
+              end;
+
+              a:=getAddressFromName(s,waitforsymbols, haserror, context);
+              if haserror then exit;
+
+              haserror:=not readprocessmemory(processhandle, pointer(a),@a,processhandler.pointersize,br);
+
+              if haserror then exit;
+
+              tokens[i]:='';
+              tokens[k]:=inttohex(a,8);
+
+              if pointerstartpos=0 then
+                haspointer:=false;
+            end
+            else
+            begin
+              haserror:=true;
+              exit;
+            end;
+
+          end;
         end;
       end;
     end;
@@ -2685,14 +2800,35 @@ begin
   end;
 
 
-  mathstring:='';
+{  mathstring:='';
   for i:=0 to length(tokens)-1 do
     mathstring:=mathstring+tokens[i];
-
+    }
+     {
   if haspointer then
   begin
     result:=GetAddressFromPointer(mathstring,haserror);
     exit;
+  end;  }
+
+  if hasmultiplication then
+  begin
+    //remove the empty tokens
+    i:=0;
+    while i<length(tokens)-1 do
+    begin
+      if tokens[i]='' then
+      begin
+        for j:=i to length(tokens)-2 do
+          tokens[j]:=tokens[j+1];
+
+        setlength(tokens, length(tokens)-1);
+        continue;
+      end;
+
+      inc(i);
+    end;
+
   end;
 
 
@@ -2776,7 +2912,8 @@ function TSymhandler.loadmodulelist: boolean;  //todo: change to a quicker looku
 var
   ths: thandle;
   me32:MODULEENTRY32;
-  x: pchar;
+  s: string;
+  x: string;
 
   i: integer;
 
@@ -2839,11 +2976,12 @@ begin
           try
             if module32first(ths,me32) then
             repeat
-              x:=me32.szExePath;
-              if (x[0]<>'[') then //do not extract the filename if it's a 'special' marker
-                modulename:=extractfilename(x)
+              s:=WinCPToUTF8(pchar(@me32.szExePath[0]));
+              x:=s;
+              if (s[1]<>'[') then //do not extract the filename if it's a 'special' marker
+                modulename:=extractfilename(s)
               else
-                modulename:=x;
+                modulename:=s;
 
 
               alreadyInTheList:=false;
@@ -3018,7 +3156,7 @@ function TSymhandler.GetAddressFromPointer(s: string; var error: boolean):ptrUin
 Will return the address of a pointer noted as [[[xxx+xx]+xx]+xx]+xx
 If it is a invalid pointer, or can not be resolved, the result is NULL 
 }
-var i: integer;
+var i, pointersize: integer;
     list: tstringlist;
     offsets: array of integer;
     baseaddress: ptruint;
@@ -3026,9 +3164,21 @@ var i: integer;
     realaddress, realaddress2: ptrUint;
     check: boolean;
     count: PtrUInt;
+    processhandle: THandle;
 begin
   result:=0;
   error:=true;
+
+  if not targetself then
+  begin
+    processhandle:=processhandlerunit.processhandle;
+    pointersize:=processhandler.pointersize;
+  end
+  else
+  begin
+    processhandle:=GetCurrentProcess;
+    pointersize:={$ifdef cpu32}4{$else}8{$endif};
+  end;
 
   list:=tstringlist.create;
   try
@@ -3059,8 +3209,8 @@ begin
     for i:=0 to length(offsets)-1 do
     begin
       realaddress:=0;
-      check:=readprocessmemory(processhandle,pointer(realaddress2),@realaddress,processhandler.pointersize,count);
-      if check and (count=processhandler.pointersize) then
+      check:=readprocessmemory(processhandle,pointer(realaddress2),@realaddress,pointersize,count);
+      if check and (count=pointersize) then
         realaddress2:=realaddress+offsets[i]
       else
         exit;
@@ -3071,6 +3221,42 @@ begin
   finally
     list.free;
   end;
+end;
+
+function TSymhandler.ParseRange(s: string; var start: QWORD; var stop: QWORD): boolean;
+var
+  tokens: ttokens;
+  i: integer;
+  t2start: integer;
+  s1,s2: string;
+  err: boolean;
+begin
+  result:=false;
+  tokenize(s, tokens);
+
+  //first find the first part
+  s1:='';
+  for i:=0 to length(tokens)-2 do
+  begin
+    s1:=s1+tokens[i];
+    err:=false;
+    start:=symhandler.getAddressFromName(s1, true, err);
+    if (err=false) and (tokens[i+1]='-') then
+    begin
+      t2start:=i+2;
+      break;
+    end;
+  end;
+
+  if err then exit;
+
+  s2:='';
+  for i:=t2start to length(tokens)-1 do
+    s2:=s2+tokens[i];
+
+  stop:=symhandler.getAddressFromName(s2, true, err);
+
+  result:=not err;
 end;
 
 function TSymhandler.ParseAsPointer(s: string; list:tstrings): boolean;
@@ -3158,19 +3344,15 @@ begin
     try
       commonModuleList.LoadFromFile(s);
 
-      i:=0;
-      while i<commonModuleList.Count do
+      for i:=commonModuleList.Count-1 downto 0 do
       begin
         j:=pos('#', commonModuleList[i]);
         if j>0 then
-          commonModuleList[i]:=trim(copy(commonModuleList[i], 1, j-1));
+          commonModuleList[i]:=copy(commonModuleList[i], 1, j-1);
 
-        commonModuleList[i]:=lowercase(commonModuleList[i]);
+        commonModuleList[i]:=lowercase(trim(commonModuleList[i]));
 
-        if commonModuleList[i]='' then
-          commonModuleList.Delete(i)
-        else
-          inc(i);
+        if commonModuleList[i]='' then commonModuleList.Delete(i);
       end;
     except
       //don't care if file can't be loaded anyhow
@@ -3328,6 +3510,8 @@ begin
 
   SymFromName:=GetProcAddress(dbghlp,'SymFromName');
   SymFromAddr:=GetProcAddress(dbghlp,'SymFromAddr');
+  StackWalkEx:=GetProcAddress(dbghlp,'StackWalkEx');
+
 
   psa:=loadlibrary('Psapi.dll');
   EnumProcessModules:=GetProcAddress(psa,'EnumProcessModules');

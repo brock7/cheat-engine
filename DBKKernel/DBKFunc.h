@@ -2,6 +2,9 @@
 #define DBKFUNC_H
 
 #include "ntifs.h"
+//#include <ntifs.h>
+#include <ntstrsafe.h>
+
 #include <windef.h>
 
 #include "interruptHook.h"
@@ -37,6 +40,23 @@ struct PTEStruct
 	unsigned A2		   :  1; // available 2/ is 1 when paged to disk
 	unsigned A3		   :  1; // available 3
 	unsigned PFN       : 20; // page-frame number
+};
+
+struct PTEStruct64
+{
+	unsigned long long P : 1; // present (1 = present)
+	unsigned long long RW : 1; // read/write
+	unsigned long long US : 1; // user/supervisor
+	unsigned long long PWT : 1; // page-level write-through
+	unsigned long long PCD : 1; // page-level cache disabled
+	unsigned long long A : 1; // accessed
+	unsigned long long Reserved : 1; // dirty
+	unsigned long long PS : 1; // page size (0 = 4-KB page)
+	unsigned long long G : 1; // global page
+	unsigned long long A1 : 1; // available 1 aka copy-on-write
+	unsigned long long A2 : 1; // available 2/ is 1 when paged to disk
+	unsigned long long A3 : 1; // available 3
+	unsigned long long PFN : 52; // page-frame number
 };
 
 typedef struct tagDebugregs
@@ -245,6 +265,7 @@ void csEnter(PcriticalSection CS);
 void csLeave(PcriticalSection CS);
 
 void forEachCpu(PKDEFERRED_ROUTINE dpcfunction,  PVOID DeferredContext, PVOID  SystemArgument1, PVOID  SystemArgument2);
+void forEachCpuAsync(PKDEFERRED_ROUTINE dpcfunction, PVOID DeferredContext, PVOID  SystemArgument1, PVOID  SystemArgument2);
 void forEachCpuPassive(PF f, UINT_PTR param);
 
 #endif;

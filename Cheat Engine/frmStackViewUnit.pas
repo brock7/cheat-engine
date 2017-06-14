@@ -22,6 +22,8 @@ type
     MenuItem3: TMenuItem;
     MenuItem4: TMenuItem;
     MenuItem5: TMenuItem;
+    MenuItem6: TMenuItem;
+    miAddRef: TMenuItem;
     miSetColor: TMenuItem;
     miFindNext: TMenuItem;
     miFind: TMenuItem;
@@ -42,11 +44,13 @@ type
       State: TCustomDrawState; var DefaultDraw: Boolean);
     procedure lvStackDblClick(Sender: TObject);
     procedure MenuItem3Click(Sender: TObject);
+    procedure miAddRefClick(Sender: TObject);
     procedure miSetColorClick(Sender: TObject);
     procedure miFindClick(Sender: TObject);
     procedure miLockAndTraceClick(Sender: TObject);
     procedure miAddESPClick(Sender: TObject);
     procedure miCopyAddressClick(Sender: TObject);
+    procedure PopupMenu1Popup(Sender: TObject);
   private
     { private declarations }
     c: PContext;
@@ -56,6 +60,7 @@ type
     allocs: tlist;
 
     colors: TMap;
+    StackReference: ptruint;
   public
     { public declarations }
     procedure SetContextPointer(c: PContext; stack: pbyte; size: integer);
@@ -95,16 +100,28 @@ begin
     begin
       if lvstack.items[i].Selected then
       begin
-        if part=0 then
-          s.add(lvstack.items[i].caption)
-        else
-          s.add(lvstack.items[i].SubItems[part-1]);
+        case part of
+          0: s.add(lvstack.items[i].caption);
+          1,2: s.add(lvstack.items[i].SubItems[part-1]);
+          3: s.add(PadRight(lvstack.items[i].caption,20)+' - '+PadRight(lvstack.items[i].SubItems[0],20) + ' - '+lvstack.items[i].SubItems[1]);
+        end;
       end;
     end;
 
     Clipboard.AsText:=s.text;
   finally
     s.free;
+  end;
+end;
+
+procedure TfrmStackView.PopupMenu1Popup(Sender: TObject);
+var
+  x: ptruint;
+begin
+  if lvStack.selected<>nil then
+  begin
+    x:=ptruint(lvstack.selected.data);
+    miAddRef.caption:=format('(ref+*) Ref will be %x',[x]);
   end;
 end;
 
@@ -183,10 +200,23 @@ begin
 
 end;
 
+
+
+procedure TfrmStackView.miAddRefClick(Sender: TObject);
+begin
+  if lvStack.Selected<>nil then
+  begin
+    StackReference:=ptruint(lvstack.selected.data);
+    SetContextPointer(c, stack, size);
+  end
+  else
+    miAddESP.Checked:=true;
+end;
+
 procedure TfrmStackView.miSetColorClick(Sender: TObject);
 var i: integer;
   a: ptruint;
-  c: tcolor;
+  oldc, c: tcolor;
 begin
   if lvStack.selected<>nil then
   begin
@@ -202,11 +232,15 @@ begin
         if lvstack.items[i].Selected then
         begin
           a:=ptruint(lvStack.items[i].Data);
-          colors.Add(a, c);
+          if colors.HasId(a) then
+            colors.SetData(a, c)
+          else
+            colors.Add(a, c);
         end;
       end;
     end;
 
+    lvStack.Refresh;
     lvStack.Repaint;
 
   end;
@@ -214,6 +248,7 @@ end;
 
 procedure TfrmStackView.miFindClick(Sender: TObject);
 begin
+
   finddialog1.execute;
 end;
 
@@ -260,6 +295,21 @@ begin
       lvstack.Column[1].width:=x[1];
       lvstack.Column[2].width:=x[2];
     end;
+  end
+  else
+  begin
+    {$ifdef cpu32}
+    lvStack.Column[0].Width:=lvStack.Canvas.TextWidth('DDDDDDDD');
+    lvStack.Column[1].Width:=lvStack.Canvas.TextWidth('DDDDDDDD');
+    {$else}
+    lvStack.Column[0].Width:=lvStack.Canvas.TextWidth('DDDDDDDDDDDDD');
+    lvStack.Column[1].Width:=lvStack.Canvas.TextWidth('DDDDDDDDDDDDD');
+
+    if clientwidth<lvStack.Column[0].Width+lvStack.Column[1].Width+20 then
+      lvStack.Column[0].Width:=lvStack.Column[0].Width+lvStack.Column[1].Width+20;
+    {$endif}
+
+
   end;
 end;
 
@@ -367,6 +417,9 @@ var tempstringlist: tstringlist;
   secondary: string;
 
   li: tlistitem;
+
+  refname: string;
+  refaddress: ptruint;
 begin
   self.c:=c;
   self.stack:=stack;
@@ -376,7 +429,30 @@ begin
   lvStack.BeginUpdate;
   lvStack.Items.BeginUpdate;
   try
-    ce_stacktrace(c.{$ifdef cpu64}rsp{$else}esp{$endif}, c.{$ifdef cpu64}rbp{$else}ebp{$endif}, c.{$ifdef cpu64}rip{$else}eip{$endif}, pbytearray(stack), size, tempstringlist, true,false,false,0,miAddEBP.checked);
+    if miAddESP.checked then
+    begin
+      refname:='rsp';
+      refaddress:=c.{$ifdef cpu64}rsp{$else}esp{$endif};
+      if not processhandler.is64Bit then
+        refname[1]:='e';
+    end
+    else
+    if miAddEBP.checked then
+    begin
+      refname:='ebp';
+      if not processhandler.is64Bit then
+        refname[1]:='e';
+
+      refaddress:=c.{$ifdef cpu64}rbp{$else}ebp{$endif};
+    end
+    else
+    if miAddRef.checked then
+    begin
+      refname:=' ';
+      refaddress:=StackReference;
+    end;
+
+    ce_stacktrace(c.{$ifdef cpu64}rsp{$else}esp{$endif}, c.{$ifdef cpu64}rbp{$else}ebp{$endif}, c.{$ifdef cpu64}rip{$else}eip{$endif}, pbytearray(stack), size, tempstringlist, true,false,false,0,refaddress, refname);
     //now fill the listview with this information
 
     lvStack.Items.Clear;

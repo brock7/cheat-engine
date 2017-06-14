@@ -1,23 +1,24 @@
 object frmStackView: TfrmStackView
-  Left = 976
-  Height = 240
-  Top = 644
-  Width = 320
+  Left = 368
+  Height = 211
+  Top = 522
+  Width = 374
   BorderStyle = bsSizeToolWin
   Caption = 'Stack View'
-  ClientHeight = 240
-  ClientWidth = 320
+  ClientHeight = 211
+  ClientWidth = 374
   OnClose = FormClose
   OnCloseQuery = FormCloseQuery
   OnCreate = FormCreate
   OnDestroy = FormDestroy
   OnShow = FormShow
-  LCLVersion = '1.0.8.0'
+  PopupMode = pmAuto
+  LCLVersion = '1.6.4.0'
   object lvStack: TListView
     Left = 0
-    Height = 240
+    Height = 211
     Top = 0
-    Width = 320
+    Width = 374
     Align = alClient
     AutoWidthLastColumn = True
     Columns = <    
@@ -33,7 +34,7 @@ object frmStackView: TfrmStackView
       end    
       item
         Caption = 'Secondary'
-        Width = 156
+        Width = 210
       end>
     HideSelection = False
     MultiSelect = True
@@ -46,6 +47,7 @@ object frmStackView: TfrmStackView
     OnDblClick = lvStackDblClick
   end
   object PopupMenu1: TPopupMenu
+    OnPopup = PopupMenu1Popup
     left = 108
     top = 84
     object miAddESP: TMenuItem
@@ -63,21 +65,37 @@ object frmStackView: TfrmStackView
       RadioItem = True
       OnClick = miAddESPClick
     end
+    object miAddRef: TMenuItem
+      Caption = '(ref+*) Ref will be %x'
+      GroupIndex = 1
+      RadioItem = True
+      ShortCut = 32
+      OnClick = miAddRefClick
+    end
     object MenuItem1: TMenuItem
       Caption = '-'
     end
     object miCopyAddress: TMenuItem
       Caption = 'Copy Address'
+      ShortCut = 24643
       OnClick = miCopyAddressClick
     end
     object miCopyValue: TMenuItem
       Tag = 1
       Caption = 'Copy Value'
+      ShortCut = 16451
       OnClick = miCopyAddressClick
     end
     object miCopySecondary: TMenuItem
       Tag = 2
       Caption = 'Copy Secondary'
+      ShortCut = 57411
+      OnClick = miCopyAddressClick
+    end
+    object MenuItem6: TMenuItem
+      Tag = 3
+      Caption = 'Copy Line'
+      ShortCut = 49219
       OnClick = miCopyAddressClick
     end
     object MenuItem4: TMenuItem
@@ -115,6 +133,8 @@ object frmStackView: TfrmStackView
     end
   end
   object FindDialog1: TFindDialog
+    Width = 480
+    Height = 136
     Options = [frDown, frHideMatchCase, frHideWholeWord, frHideUpDown, frHideEntireScope, frHidePromptOnReplace]
     OnFind = FindDialog1Find
     left = 208

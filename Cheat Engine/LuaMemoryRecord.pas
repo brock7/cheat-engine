@@ -19,7 +19,7 @@ var
   memrec: TMemoryRecord;
 begin
   memrec:=luaclass_getClassObject(L);
-  lua_pushinteger(L, length(memrec.pointeroffsets));
+  lua_pushinteger(L, memrec.offsetCount);
   result:=1;
 end;
 
@@ -30,7 +30,7 @@ begin
   result:=0;
   memrec:=luaclass_getClassObject(L);
   if lua_gettop(L)=1 then
-    setlength(memrec.pointeroffsets, lua_tointeger(L, 1));
+    memrec.offsetCount:=lua_tointeger(L, 1);
 end;
 
 function memoryrecord_getOffset(L: PLua_State): integer; cdecl;
@@ -43,7 +43,7 @@ begin
   if lua_gettop(L)=1 then
   begin
     index:=lua_toInteger(L,1);
-    lua_pushinteger(L, memrec.pointeroffsets[index]);
+    lua_pushinteger(L, memrec.offsets[index].offset);
     result:=1;
   end;
 end;
@@ -58,9 +58,39 @@ begin
   if lua_gettop(L)=2 then
   begin
     index:=lua_toInteger(L,1);
-    memrec.pointeroffsets[index]:=lua_tointeger(L, 2);
+    memrec.offsets[index].offset:=lua_tointeger(L, 2);
   end;
 end;
+
+function memoryrecord_getOffsetText(L: PLua_State): integer; cdecl;
+var
+  memrec: TMemoryRecord;
+  index: integer;
+begin
+  result:=0;
+  memrec:=luaclass_getClassObject(L);
+  if lua_gettop(L)=1 then
+  begin
+    index:=lua_toInteger(L,1);
+    lua_pushstring(L, memrec.offsets[index].offsetText);
+    result:=1;
+  end;
+end;
+
+function memoryrecord_setOffsetText(L: PLua_State): integer; cdecl;
+var
+  memrec: TMemoryRecord;
+  index: integer;
+begin
+  result:=0;
+  memrec:=luaclass_getClassObject(L);
+  if lua_gettop(L)=2 then
+  begin
+    index:=lua_toInteger(L,1);
+    memrec.offsets[index].offsetText:=Lua_ToString(L, 2);
+  end;
+end;
+
 
 function memoryrecord_getchild(L: PLUA_State): integer; cdecl;
 var
@@ -120,10 +150,10 @@ begin
     lua_newtable(L);
     tabletop:=lua_gettop(L);
 
-    for i:=0 to length(memrec.pointeroffsets)-1 do
+    for i:=0 to memrec.offsetCount-1 do
     begin
       lua_pushinteger(L,i+1);
-      lua_pushinteger(L, memrec.pointeroffsets[i]);
+      lua_pushinteger(L, memrec.offsets[i].offset);
       lua_settable(L, tabletop);
     end;
     result:=2;
@@ -143,7 +173,7 @@ begin
     //address
     memrec.interpretableaddress:=Lua_ToString(L, 1);
     memrec.ReinterpretAddress(true);
-    setlength(memrec.pointeroffsets, 0);
+    memrec.offsetCount:=0;
 
     if lua_gettop(L)>=2 then
     begin
@@ -153,12 +183,12 @@ begin
         i:=lua_objlen(L,2);
         if i>512 then exit; //FY
 
-        setlength(memrec.pointeroffsets, i);
-        for i:=0 to length(memrec.pointeroffsets)-1 do
+        memrec.offsetCount:=i;
+        for i:=0 to memrec.offsetCount-1 do
         begin
           lua_pushinteger(L, i+1); //get the offset
           lua_gettable(L, 2); //from the table    (table[i+1])
-          memrec.pointeroffsets[i]:=lua_tointeger(L,-1);
+          memrec.offsets[i].offset:=lua_tointeger(L,-1);
           lua_pop(L,1);
         end;
       end;
@@ -333,6 +363,12 @@ begin
   result:=1;
 end;
 
+function memoryrecord_disableWithoutExecute(L: PLua_State): integer; cdecl;
+begin
+  result:=0;
+  TMemoryRecord(luaclass_getClassObject(L)).disablewithoutexecute;
+end;
+
 function memoryrecord_setActive(L: PLua_State): integer; cdecl;
 var
   memrec: TMemoryRecord;
@@ -422,8 +458,18 @@ function memoryrecord_delete(L: PLua_State): integer; cdecl;
 var
   memoryrecord: Tmemoryrecord;
 begin
+  result:=0;
   memoryrecord:=luaclass_getClassObject(L);
   memoryrecord.free;
+end;
+
+function memoryrecord_reinterpretAddress(L: PLua_State): integer; cdecl;
+var
+  memoryrecord: Tmemoryrecord;
+begin
+  result:=0;
+  memoryrecord:=luaclass_getClassObject(L);
+  memoryrecord.ReinterpretAddress(true);
 end;
 
 function memoryrecord_getID(L: PLua_State): integer; cdecl;
@@ -433,6 +479,54 @@ begin
   memoryrecord:=luaclass_getClassObject(L);
   lua_pushinteger(L, memoryrecord.id);
   result:=1;
+end;
+
+function memoryrecord_createHotkey(L: PLua_State): integer; cdecl;
+var
+  memoryrecord: Tmemoryrecord;
+  hk: TMemoryRecordHotkey;
+  keys: TKeyCombo;
+  action: TMemrecHotkeyAction;
+  value, description: string;
+  i: integer;
+begin
+  result:=0;
+  memoryrecord:=luaclass_getClassObject(L);
+  if lua_gettop(L)=4 then
+  begin
+    if (not lua_istable(L, 1)) or (not lua_isnumber(L, 2)) then exit(0);
+
+
+
+    for i:=0 to 4 do
+    begin
+
+      lua_pushinteger(L, i+1);
+      lua_gettable(L, 1);
+      if lua_isnil(L, -1) then  //end of the list
+      begin
+        keys[i]:=0;
+        lua_pop(L,1);
+        break;
+      end
+      else
+      begin
+        keys[i]:=lua_tointeger(L,-1);
+        lua_pop(L,1);
+      end;
+    end;
+
+
+    action:=TMemrecHotkeyAction(lua_tointeger(L, 2));
+
+    value:=Lua_ToString(L, 3);
+    description:=Lua_ToString(L, 4);
+
+    hk:=memoryrecord.Addhotkey(keys, action, value, description);
+    result:=1;
+    luaclass_newClass(L, hk);
+  end;
+
 end;
 
 function memoryrecord_getHotkeyCount(L: PLua_State): integer; cdecl;
@@ -522,6 +616,30 @@ begin
   if lua_gettop(L)>=1 then
     memoryrecord.Extra.stringData.unicode:=lua_toboolean(L, -1);
 
+  if memoryrecord.Extra.stringData.Unicode then
+    memoryrecord.Extra.stringData.codepage:=false;
+end;
+
+function memoryrecord_string_getCodePage(L: PLua_State): integer; cdecl;
+var
+  memoryrecord: Tmemoryrecord;
+begin
+  memoryrecord:=luaclass_getClassObject(L);
+  lua_pushboolean(L, memoryrecord.Extra.stringData.CodePage);
+  result:=1;
+end;
+
+function memoryrecord_string_setCodePage(L: PLua_State): integer; cdecl;
+var
+  memoryrecord: Tmemoryrecord;
+begin
+  result:=0;
+  memoryrecord:=luaclass_getClassObject(L);
+  if lua_gettop(L)>=1 then
+    memoryrecord.Extra.stringData.CodePage:=lua_toboolean(L, -1);
+
+  if memoryrecord.Extra.stringData.CodePage then
+    memoryrecord.Extra.stringData.unicode:=false;
 end;
 
 function memoryrecord_binary_getStartbit(L: PLua_State): integer; cdecl;
@@ -729,14 +847,20 @@ begin
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'setScript', memoryrecord_setScript);
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'getActive', memoryrecord_getActive);
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'setActive', memoryrecord_setActive);
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'disableWithoutExecute', memoryrecord_disableWithoutExecute);
+
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'getChild', memoryrecord_getChild);
 
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'isSelected', memoryrecord_isSelected);
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'appendToEntry', memoryrecord_appendToEntry);
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'delete', memoryrecord_delete);
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'reinterpret', memoryrecord_reinterpretAddress);
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'getHotkeyCount', memoryrecord_getHotkeyCount);
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'getHotkey', memoryrecord_getHotkey);
   luaclass_addClassFunctionToTable(L, metatable, userdata, 'getHotkeyByID', memoryrecord_getHotkeyByID);
+
+  luaclass_addClassFunctionToTable(L, metatable, userdata, 'createHotkey', memoryrecord_createHotkey);
+
 
 
   luaclass_addPropertyToTable(L, metatable, userdata, 'Description', memoryrecord_getDescription, memoryrecord_setDescription);
@@ -748,16 +872,16 @@ begin
   luaclass_addPropertyToTable(L, metatable, userdata, 'Active', memoryrecord_getActive, memoryrecord_setActive);
   luaclass_addPropertyToTable(L, metatable, userdata, 'Selected', memoryrecord_isSelected, nil);
   luaclass_addPropertyToTable(L, metatable, userdata, 'HotkeyCount', memoryrecord_getHotkeyCount, nil);
-  luaclass_addArrayPropertyToTable(L, metatable, userdata, 'Hotkey', memoryrecord_getHotkey, nil);
+  luaclass_addArrayPropertyToTable(L, metatable, userdata, 'Hotkey', memoryrecord_getHotkey);
 
 
 
   luaclass_addPropertyToTable(L, metatable, userdata, 'OffsetCount', memoryrecord_getOffsetCount, memoryrecord_setOffsetCount);
   luaclass_addArrayPropertyToTable(L, metatable, userdata, 'Offset', memoryrecord_getOffset, memoryrecord_setOffset);
+  luaclass_addArrayPropertyToTable(L, metatable, userdata, 'OffsetText', memoryrecord_getOffsetText, memoryrecord_setOffsetText);
 
 
   luaclass_addPropertyToTable(L, metatable, userdata, 'Active', memoryrecord_getActive, memoryrecord_setActive);
-
 
 
   recordEntries:=Trecordentries.create;
@@ -770,6 +894,11 @@ begin
   recordEntry.name:='Unicode';
   recordEntry.getf:=memoryrecord_string_getUnicode;
   recordEntry.setf:=memoryrecord_string_setUnicode;
+  recordEntries.add(recordEntry);
+
+  recordEntry.name:='Codepage';
+  recordEntry.getf:=memoryrecord_string_getCodepage;
+  recordEntry.setf:=memoryrecord_string_setCodepage;
   recordEntries.add(recordEntry);
 
   luaclass_addRecordPropertyToTable(L, metatable, userdata, 'String', recordEntries);

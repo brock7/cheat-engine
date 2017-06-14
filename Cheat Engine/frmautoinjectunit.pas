@@ -67,6 +67,15 @@ end;
 type TScriptMode=(smAutoAssembler, smLua, smGnuAssembler);
 
 type
+  TAutoAssemblerTemplateCallback=procedure(script: TStrings; sender: TObject) of object;
+  TAutoAssemblerTemplate=record
+                           name: string;
+                           m: TAutoAssemblerTemplateCallback;
+                         end;
+
+  TAutoAssemblerTemplates=array of TAutoAssemblerTemplate;
+
+type
 
   { TfrmAutoInject }
 
@@ -75,6 +84,7 @@ type
     File1: TMenuItem;
     menuAOBInjection: TMenuItem;
     menuFullInjection: TMenuItem;
+    MenuItem1: TMenuItem;
     mifindNext: TMenuItem;
     miCallLua: TMenuItem;
     miNewWindow: TMenuItem;
@@ -82,6 +92,7 @@ type
     Button1: TButton;
     Load1: TMenuItem;
     Panel2: TPanel;
+    ReplaceDialog1: TReplaceDialog;
     Save1: TMenuItem;
     OpenDialog1: TOpenDialog;
     SaveDialog1: TSaveDialog;
@@ -116,9 +127,12 @@ type
     procedure Load1Click(Sender: TObject);
     procedure menuAOBInjectionClick(Sender: TObject);
     procedure menuFullInjectionClick(Sender: TObject);
+    procedure MenuItem1Click(Sender: TObject);
     procedure mifindNextClick(Sender: TObject);
     procedure miCallLuaClick(Sender: TObject);
     procedure miNewWindowClick(Sender: TObject);
+    procedure ReplaceDialog1Find(Sender: TObject);
+    procedure ReplaceDialog1Replace(Sender: TObject);
     procedure Save1Click(Sender: TObject);
     procedure Exit1Click(Sender: TObject);
     procedure FormClose(Sender: TObject; var Action: TCloseAction);
@@ -177,8 +191,8 @@ type
     procedure setCustomTypeScript(x: boolean);
     procedure gutterclick(Sender: TObject; X, Y, Line: integer; mark: TSynEditMark);
     procedure assemblescreenchange(sender: TObject);
-    function GetUniqueAOB(mi: TModuleInfo; address: ptrUint; codesize: Integer; var resultOffset: Integer) : string;
 
+    procedure CustomTemplateClick(sender: tobject);
   public
     { Public declarations }
 
@@ -194,21 +208,30 @@ type
     callbackroutine: TCallbackroutine;
     CustomTypeCallback: TCustomCallbackroutine;
     injectintomyself: boolean;
+    procedure addTemplate(id: integer);
+    procedure removeTemplate(id: integer);
     property CustomTypeScript: boolean read fCustomTypeScript write setCustomTypeScript;
     property ScriptMode: TScriptMode read fScriptMode write setScriptMode;
   end;
 
 
 procedure Getjumpandoverwrittenbytes(address,addressto: ptrUINT; jumppart,originalcodepart: tstrings);
-procedure generateAPIHookScript(script: tstrings; address: string; addresstogoto: string; addresstostoreneworiginalfunction: string=''; nameextension:string='0');
+procedure generateAPIHookScript(script: tstrings; address: string; addresstogoto: string; addresstostoreneworiginalfunction: string=''; nameextension:string='0'; targetself: boolean=false);
+procedure GenerateCodeInjectionScript(script: tstrings; addressstring: string);
+procedure GenerateAOBInjectionScript(script: TStrings; address: string; symbolname: string);
+procedure GenerateFullInjectionScript(Script: tstrings; address: string);
 
+function registerAutoAssemblerTemplate(name: string; m: TAutoAssemblerTemplateCallback): integer;
+procedure unregisterAutoAssemblerTemplate(id: integer);
+
+function GetUniqueAOB(mi: TModuleInfo; address: ptrUint; codesize: Integer; var resultOffset: Integer) : string;
 
 
 implementation
 
 
 uses frmAAEditPrefsUnit,MainUnit,memorybrowserformunit,APIhooktemplatesettingsfrm,
-  Globals, Parsers, MemoryQuery, GnuAssembler;
+  Globals, Parsers, MemoryQuery, GnuAssembler, LuaCaller, SynEditTypes;
 
 resourcestring
   rsExecuteScript = 'Execute script';
@@ -229,6 +252,118 @@ resourcestring
   rsEndAddressLastBytesAreIncludedIfNecesary = 'End address (last bytes are included if necessary)';
   rsAreYouSureYouWantToClose = 'Are you sure you want to close %s ?';
   rsWhatIdentifierDoYouWantToUse = 'What do you want to name the symbol for the injection point?';
+  rsThumbInstructionsAreNotYetImplemented = 'Thumb instructions are not yet implemented';
+  rsScript1 = 'Script 1';
+  rsScript = 'Script ';
+  rsFailedAllocatingMemoryForTheScript = 'Failed allocating memory for the script';
+  rsFailedWritingTheScriptToTheProcess = 'failed writing the script to the process';
+  rsFailureLoadingUndercdll = 'Failure loading undercdll';
+  rsFailedCreatingCallingStubForScriptLocatedAtAddress = 'Failed creating calling stub for script located at address ';
+  rsERRORCouldNotFindUniqueAOBTriedCode = 'ERROR: Could not find unique AOB, tried code "';
+
+var
+  AutoAssemblerTemplates: TAutoAssemblerTemplates;
+
+
+
+
+function registerAutoAssemblerTemplate(name: string; m: TAutoAssemblerTemplateCallback): integer;
+var i: integer;
+begin
+  //find a spot in the current list
+  result:=-1;
+  for i:=0 to length(AutoAssemblerTemplates)-1 do
+    if not assigned(AutoAssemblerTemplates[i].m) then
+    begin
+      AutoAssemblerTemplates[i].name:=name;
+      AutoAssemblerTemplates[i].m:=m;
+      result:=i;
+      break;
+    end;
+
+  if result=-1 then
+  begin
+    i:=length(AutoAssemblerTemplates);
+    setlength(AutoAssemblerTemplates,i+1);
+    AutoAssemblerTemplates[i].name:=name;
+    AutoAssemblerTemplates[i].m:=m;
+    result:=i;
+  end;
+
+  //check for open autoassembler windows
+  for i:=0 to screen.FormCount-1 do
+  begin
+    if screen.Forms[i] is TfrmAutoInject then
+      TfrmAutoInject(screen.Forms[i]).addTemplate(result);
+  end;
+end;
+
+procedure unregisterAutoAssemblerTemplate(id: integer);
+var i: integer;
+begin
+  if id<length(AutoAssemblerTemplates) then
+  begin
+    //check for open autoassembler windows
+    for i:=0 to screen.FormCount-1 do
+    begin
+      if screen.Forms[i] is TfrmAutoInject then
+        TfrmAutoInject(screen.Forms[i]).removeTemplate(id);
+    end;
+
+    CleanupLuaCall(TMethod(AutoAssemblerTemplates[id].m));
+
+    AutoAssemblerTemplates[id].name:='';
+    AutoAssemblerTemplates[id].m:=nil;
+  end;
+end;
+
+procedure TfrmAutoInject.removeTemplate(id: integer);
+var i: integer;
+begin
+  for i:=emplate1.Count-1 downto 0 do
+    if emplate1.Items[i].Tag=id+1 then
+      emplate1.Items[i].Free;
+
+end;
+
+procedure TfrmAutoInject.addTemplate(id: integer);
+var
+  mi: TMenuItem;
+  t: TAutoAssemblerTemplate;
+begin
+  if id<length(AutoAssemblerTemplates) then
+  begin
+    t:=AutoAssemblerTemplates[id];
+    if assigned(t.m) then
+    begin
+      if ScriptMode=smAutoAssembler then
+      begin
+        mi:=TMenuItem.create(MainMenu1);
+        mi.Caption:=t.name;
+        mi.Tag:=id+1;
+        mi.OnClick:=CustomTemplateClick;
+        emplate1.Add(mi);
+      end;
+    end;
+  end;
+end;
+
+procedure TfrmAutoInject.CustomTemplateClick(sender: tobject);
+var
+  i: integer;
+  t: TAutoAssemblerTemplate;
+begin
+  if sender is TMenuItem then
+  begin
+    i:=TMenuItem(sender).Tag-1;
+    if i<length(AutoAssemblerTemplates) then
+    begin
+      t:=AutoAssemblerTemplates[i];
+      if assigned(t.m) then
+        t.m(assemblescreen.Lines, self);
+    end;
+  end;
+end;
 
 procedure TfrmAutoInject.setCustomTypeScript(x: boolean);
 begin
@@ -334,6 +469,7 @@ begin
     begin
       if editscript then
       begin
+
         //check if both scripts are valid before allowing the edit
 
         setlength(aa,1);
@@ -343,8 +479,8 @@ begin
 
 
         try
-          check:=autoassemble(assemblescreen.lines,false,true,true,injectintomyself,aa,registeredsymbols) and
-                 autoassemble(assemblescreen.lines,false,false,true,injectintomyself,aa,registeredsymbols);
+          check:=autoassemble(assemblescreen.lines,false,true,true,injectintomyself,aa,registeredsymbols,memrec) and
+                 autoassemble(assemblescreen.lines,false,false,true,injectintomyself,aa,registeredsymbols,memrec);
 
           if not check then
             errmsg:=format(rsNotAllCodeIsInjectable,['']);
@@ -395,12 +531,21 @@ begin
     savedialog1.FileName:=opendialog1.filename;
     assemblescreen.AfterLoadFromFile;
 
+    SaveDialog1.FileName:=opendialog1.FileName;
+
+    case ScriptMode of
+      smAutoAssembler: caption:=rsAutoAssembler+':'+extractfilename(opendialog1.FileName);
+      smLua: caption:=rsLUAScript+':'+extractfilename(opendialog1.FileName);
+      smGnuAssembler: caption:=rsGNUAScript+':'+extractfilename(opendialog1.FileName);
+    end;
+
   end;
 {$endif}
 end;
 
 procedure TfrmAutoInject.mifindNextClick(Sender: TObject);
 begin
+  finddialog1.Options:=finddialog1.Options+[frFindNext];
   finddialog1.OnFind(finddialog1);
 end;
 
@@ -415,6 +560,68 @@ begin
   f.show;
 end;
 
+procedure TfrmAutoInject.ReplaceDialog1Find(Sender: TObject);
+var so: TSynSearchOptions;
+begin
+  so:=[];
+  if not (frDown in ReplaceDialog1.Options) then
+    so:=so+[ssoBackwards];
+
+  if (frEntireScope in ReplaceDialog1.Options) then
+    so:=so+[ssoEntireScope];
+
+  if (frMatchCase in ReplaceDialog1.Options) then
+    so:=so+[ssoMatchCase];
+
+  if (frPromptOnReplace in ReplaceDialog1.Options) then
+    so:=so+[ssoPrompt];
+
+  if (frFindNext in ReplaceDialog1.Options) then
+    so:=so+[ssoFindContinue];
+
+  if (frWholeWord in ReplaceDialog1.Options) then
+    so:=so+[ssoWholeWord];
+
+ { if assemblescreen.SelAvail then
+    so:=so+[ssoSelectedOnly];   }
+
+  assemblescreen.SearchReplace(ReplaceDialog1.FindText,'',so);
+end;
+
+procedure TfrmAutoInject.ReplaceDialog1Replace(Sender: TObject);
+var so: TSynSearchOptions;
+begin
+  so:=[];
+  if not (frDown in ReplaceDialog1.Options) then
+    so:=so+[ssoBackwards];
+
+  if (frEntireScope in ReplaceDialog1.Options) then
+    so:=so+[ssoEntireScope];
+
+  if (frMatchCase in ReplaceDialog1.Options) then
+    so:=so+[ssoMatchCase];
+
+  if (frPromptOnReplace in ReplaceDialog1.Options) then
+    so:=so+[ssoPrompt];
+
+  if (frReplace in ReplaceDialog1.Options) then
+    so:=so+[ssoReplace];
+
+  if (frReplaceAll in ReplaceDialog1.Options) then
+    so:=so+[ssoReplaceAll];
+
+  if (frFindNext in ReplaceDialog1.Options) then
+    so:=so+[ssoFindContinue];
+
+  if (frWholeWord in ReplaceDialog1.Options) then
+    so:=so+[ssoWholeWord];
+
+  if assemblescreen.SelAvail then
+    so:=so+[ssoSelectedOnly];
+
+  assemblescreen.SearchReplace(ReplaceDialog1.FindText,ReplaceDialog1.ReplaceText,so);
+end;
+
 procedure TfrmAutoInject.Save1Click(Sender: TObject);
 var f: tfilestream;
     s: string;
@@ -427,6 +634,15 @@ begin
     f.Write(s[1],length(assemblescreen.text));
 
     assemblescreen.MarkTextAsSaved;
+
+
+    case ScriptMode of
+      smAutoAssembler: caption:=rsAutoAssembler+':'+extractfilename(savedialog1.FileName);
+      smLua: caption:=rsLUAScript+':'+extractfilename(savedialog1.FileName);
+      smGnuAssembler: caption:=rsGNUAScript+':'+extractfilename(savedialog1.FileName);
+    end;
+
+    OpenDialog1.FileName:=SaveDialog1.FileName;
 
   finally
     f.Free;
@@ -485,13 +701,13 @@ begin
 {$endif}
 end;
 
-procedure TfrmAutoInject.Codeinjection1Click(Sender: TObject);
+procedure GenerateCodeInjectionScript(script: tstrings; addressstring: string);
 function inttostr(i:int64):string;
 begin
   if i=0 then result:='' else result:=sysutils.IntToStr(i);
 end;
 
-var address: string;
+var
     originalcode: array of string;
     originalbytes: array of byte;
     codesize: integer;
@@ -506,15 +722,143 @@ var address: string;
     disablepos: integer;
     enablecode: tstringlist;
     disablecode: tstringlist;
-
-    mi: TModuleInfo;
 begin
-{$ifndef standalonetrainerwithassembler}
+  try
+    a:=StrToQWordEx('$'+addressstring);
+  except
+    a:=symhandler.getaddressfromname(addressstring);
+  end;
+
+  c:=a;
+
+  injectnr:=0;
+  for i:=0 to script.Count-1 do
+  begin
+    j:=pos('alloc(newmem',lowercase(script[i]));
+    if j<>0 then
+    begin
+      x:=copy(script[i],j+12,length(script[i]));
+      x:=copy(x,1,pos(',',x)-1);
+      try
+        k:=strtoint(x);
+        if injectnr<=k then
+          injectnr:=k+1;
+      except
+        inc(injectnr);
+      end;
+    end;
+  end;
+
+
+  //disassemble the old code
+  setlength(originalcode,0);
+  codesize:=0;
+
+  while codesize<5 do
+  begin
+    setlength(originalcode,length(originalcode)+1);
+    originalcode[length(originalcode)-1]:=disassemble(c,x);
+    i:=posex('-',originalcode[length(originalcode)-1]);
+    i:=posex('-',originalcode[length(originalcode)-1],i+1);
+    originalcode[length(originalcode)-1]:=copy(originalcode[length(originalcode)-1],i+2,length(originalcode[length(originalcode)-1]));
+    codesize:=c-a;
+  end;
+
+  setlength(originalbytes,codesize);
+  ReadProcessMemory(processhandle, pointer(a), @originalbytes[0], codesize, br);
+
+  enablecode:=tstringlist.Create;
+  disablecode:=tstringlist.Create;
+  try
+    with enablecode do
+    begin
+      if processhandler.is64bit then
+        add('alloc(newmem'+inttostr(injectnr)+',2048,'+addressstring+') ')
+      else
+        add('alloc(newmem'+inttostr(injectnr)+',2048)');
+      add('label(returnhere'+inttostr(injectnr)+')');
+      add('label(originalcode'+inttostr(injectnr)+')');
+      add('label(exit'+inttostr(injectnr)+')');
+      add('');
+      add('newmem'+inttostr(injectnr)+': //this is allocated memory, you have read,write,execute access');
+      add('//place your code here');
+
+      add('');
+      add('originalcode'+inttostr(injectnr)+':');
+      for i:=0 to length(originalcode)-1 do
+        add(originalcode[i]);
+      add('');
+      add('exit'+inttostr(injectnr)+':');
+      add('jmp returnhere'+inttostr(injectnr)+'');
+
+      add('');
+      add(addressstring+':');
+      add('jmp newmem'+inttostr(injectnr)+'');
+      while codesize>5 do
+      begin
+        add('nop');
+        dec(codesize);
+      end;
+
+      add('returnhere'+inttostr(injectnr)+':');
+      add('');
+    end;
+
+    with disablecode do
+    begin
+      add('dealloc(newmem'+inttostr(injectnr)+')');
+      add(addressstring+':');
+      for i:=0 to length(originalcode)-1 do
+        add(originalcode[i]);
+      x:='db';
+      for i:=0 to length(originalbytes)-1 do
+        x:=x+' '+inttohex(originalbytes[i],2);
+      add('//Alt: '+x);
+    end;
+
+    getenableanddisablepos(script,enablepos,disablepos);
+    //skip first comment(s)
+    if enablepos>=0 then
+    begin
+      while enablepos<script.Count-1 do
+      begin
+        if pos('//',trim(script[enablepos+1]))=1 then inc(enablepos) else break;
+      end;
+    end;
+
+    for i:=enablecode.Count-1 downto 0 do
+      script.Insert(enablepos+1,enablecode[i]);
+
+    getenableanddisablepos(script,enablepos,disablepos);
+    //skip first comment(s)
+    if disablepos>=0 then
+    begin
+      while disablepos<script.Count-1 do
+      begin
+        if pos('//',trim(script[disablepos+1]))=1 then inc(enablepos) else break;
+          inc(disablepos);
+      end;
+      //only if there actually is a disable section place this code
+      for i:=disablecode.Count-1 downto 0 do
+        script.Insert(disablepos+1,disablecode[i]);
+    end;
+  finally
+    enablecode.free;
+    disablecode.Free;
+  end;
+
+end;
+
+procedure TfrmAutoInject.Codeinjection1Click(Sender: TObject);
+var
+  a: ptruint;
+  mi: TModuleInfo;
+  address: string;
+begin
   if parent is TMemoryBrowser then
     a:=TMemoryBrowser(parent).disassemblerview.SelectedAddress
   else
     a:=memorybrowser.disassemblerview.SelectedAddress;
-
 
   if symhandler.getmodulebyaddress(a,mi) then
     address:='"'+mi.modulename+'"+'+inttohex(a-mi.baseaddress,1)
@@ -522,139 +866,12 @@ begin
     address:=symhandler.getNameFromAddress(a);
 
   if inputquery(rsCodeInjectTemplate, rsOnWhatAddressDoYouWantTheJump, address) then
-  begin
-    try
-      a:=StrToQWordEx('$'+address);
-    except
-      a:=symhandler.getaddressfromname(address);
-    end;
-
-    c:=a;
-
-    injectnr:=0;
-    for i:=0 to assemblescreen.Lines.Count-1 do
-    begin
-      j:=pos('alloc(newmem',lowercase(assemblescreen.lines[i]));
-      if j<>0 then
-      begin
-        x:=copy(assemblescreen.Lines[i],j+12,length(assemblescreen.Lines[i]));
-        x:=copy(x,1,pos(',',x)-1);
-        try
-          k:=strtoint(x);
-          if injectnr<=k then
-            injectnr:=k+1;
-        except
-          inc(injectnr);
-        end;
-      end;
-    end;
-
-
-    //disassemble the old code
-    setlength(originalcode,0);
-    codesize:=0;
-
-    while codesize<5 do
-    begin
-      setlength(originalcode,length(originalcode)+1);
-      originalcode[length(originalcode)-1]:=disassemble(c,x);
-      i:=posex('-',originalcode[length(originalcode)-1]);
-      i:=posex('-',originalcode[length(originalcode)-1],i+1);
-      originalcode[length(originalcode)-1]:=copy(originalcode[length(originalcode)-1],i+2,length(originalcode[length(originalcode)-1]));
-      codesize:=c-a;
-    end;
-
-    setlength(originalbytes,codesize);
-    ReadProcessMemory(processhandle, pointer(a), @originalbytes[0], codesize, br);
-
-    enablecode:=tstringlist.Create;
-    disablecode:=tstringlist.Create;
-    try
-      with enablecode do
-      begin
-        if processhandler.is64bit then
-          add('alloc(newmem'+inttostr(injectnr)+',2048,'+address+') ')
-        else
-          add('alloc(newmem'+inttostr(injectnr)+',2048)');
-        add('label(returnhere'+inttostr(injectnr)+')');
-        add('label(originalcode'+inttostr(injectnr)+')');
-        add('label(exit'+inttostr(injectnr)+')');
-        add('');
-        add('newmem'+inttostr(injectnr)+': //this is allocated memory, you have read,write,execute access');
-        add('//place your code here');
-
-        add('');
-        add('originalcode'+inttostr(injectnr)+':');
-        for i:=0 to length(originalcode)-1 do
-          add(originalcode[i]);
-        add('');
-        add('exit'+inttostr(injectnr)+':');
-        add('jmp returnhere'+inttostr(injectnr)+'');
-
-        add('');
-        add(address+':');
-        add('jmp newmem'+inttostr(injectnr)+'');
-        while codesize>5 do
-        begin
-          add('nop');
-          dec(codesize);
-        end;
-
-        add('returnhere'+inttostr(injectnr)+':');
-        add('');
-      end;
-
-      with disablecode do
-      begin
-        add('dealloc(newmem'+inttostr(injectnr)+')');
-        add(address+':');
-        for i:=0 to length(originalcode)-1 do
-          add(originalcode[i]);
-        x:='db';
-        for i:=0 to length(originalbytes)-1 do
-          x:=x+' '+inttohex(originalbytes[i],2);
-        add('//Alt: '+x);
-      end;
-
-      getenableanddisablepos(assemblescreen.lines,enablepos,disablepos);
-      //skip first comment(s)
-      if enablepos>=0 then
-      begin
-        while enablepos<assemblescreen.lines.Count-1 do
-        begin
-          if pos('//',trim(assemblescreen.Lines[enablepos+1]))=1 then inc(enablepos) else break;
-        end;
-      end;
-
-      for i:=enablecode.Count-1 downto 0 do
-        assemblescreen.Lines.Insert(enablepos+1,enablecode[i]);
-
-      getenableanddisablepos(assemblescreen.lines,enablepos,disablepos);
-      //skip first comment(s)
-      if disablepos>=0 then
-      begin
-        while disablepos<assemblescreen.lines.Count-1 do
-        begin
-          if pos('//',trim(assemblescreen.Lines[disablepos+1]))=1 then inc(enablepos) else break;
-            inc(disablepos);
-        end;
-        //only if there actually is a disable section place this code
-        for i:=disablecode.Count-1 downto 0 do
-          assemblescreen.Lines.Insert(disablepos+1,disablecode[i]);
-      end;
-    finally
-      enablecode.free;
-      disablecode.Free;
-    end;
-
-  end;
-
-{$endif}
+    GenerateCodeInjectionScript(assemblescreen.lines, address);
 end;
 
 procedure TfrmAutoInject.Panel1Resize(Sender: TObject);
 begin
-  button1.Left:=panel1.Width div 2-button1.Width div 2;
+
 end;
 
 
@@ -697,12 +914,11 @@ var a,b: integer;
     aa:TCEAllocArray;
     registeredsymbols: TStringlist;
 begin
-{$ifndef standalonetrainerwithassembler}
-  {$ifndef net}
-
   registeredsymbols:=tstringlist.Create;
   registeredsymbols.CaseSensitive:=false;
   registeredsymbols.Duplicates:=dupIgnore;
+
+
 
   try
     setlength(aa,0);
@@ -714,15 +930,11 @@ begin
     begin
       //add a entry with type 255
       mainform.AddAutoAssembleScript(assemblescreen.text);
-
-
     end
     else showmessage(rsFailedToAddToTableNotAllCodeIsInjectable);
   finally
-    registeredsymbols.Free;
+    freeandnil(registeredsymbols);
   end;
-  {$endif}
-  {$endif}
 end;
 
 procedure Getjumpandoverwrittenbytes(address,addressto: ptrUint; jumppart,originalcodepart: tstrings);
@@ -757,7 +969,7 @@ begin
 end;
 
 
-procedure generateAPIHookScript(script: tstrings; address: string; addresstogoto: string; addresstostoreneworiginalfunction: string=''; nameextension:string='0');
+procedure generateAPIHookScript(script: tstrings; address: string; addresstogoto: string; addresstostoreneworiginalfunction: string=''; nameextension:string='0'; targetself: boolean=false);
 var originalcode: array of string;
     originaladdress: array of ptrUint;
     i,j: integer;
@@ -786,274 +998,301 @@ var originalcode: array of string;
 
     isThumbOrigin: boolean;
     isThumbDestination: boolean;
+
+    oldhandle: thandle;
+    oldsymhandler: TSymHandler;
+    processhandle: THandle;
+    ProcessID: DWORD;
 begin
-  //disassemble the old code
-  d:=TDisassembler.Create;
-  d.showmodules:=false;
-  d.showsymbols:=false;
-
-  setlength(specifier,0);
-  setlength(originalcode,0);
-  setlength(ab,0);
-  specifiernr:=0;
-
-
-  try
-    a:=symhandler.getAddressFromName(address);
-  except
-    on e: exception do
-      raise exception.create(address+':'+e.message);
+  if targetself then
+  begin
+    //get this function to use the symbolhandler that's pointing to CE itself and the self processid/handle
+    oldhandle:=processhandlerunit.ProcessHandle;
+    processid:=getcurrentprocessid;
+    processhandle:=getcurrentprocess;
+    oldsymhandler:=symhandler;
+    symhandler:=selfsymhandler;
+    processhandler.processhandle:=processhandle;
   end;
 
   try
-    b:=symhandler.getAddressFromName(addresstogoto);
-  except
-    on e: exception do
-      raise exception.create(addresstogoto+':'+e.message);
-  end;
 
-  if processhandler.SystemArchitecture=archarm then
-  begin
-    isThumbOrigin:=(a and 1)=1; //assuming that a name is used and not the real address it occurs on
-    isThumbDestination:=(b and 1)=1;
+    //disassemble the old code
+    d:=TDisassembler.Create;
+    d.showmodules:=false;
+    d.showsymbols:=false;
 
-    if isThumbOrigin or isThumbDestination then
-      raise exception.create('The thumb instruction set is not yet suppported');
+    setlength(specifier,0);
+    setlength(originalcode,0);
+    setlength(ab,0);
+    specifiernr:=0;
 
 
-    jumpsize:=8;
-    c:=ptruint(FindFreeBlockForRegion(a,2048));
-    if (c>0) and (abs(integer(c-a))<31*1024*1024) then
-      jumpsize:=4; //can be done with one instruction B <a>
-  end
-  else
-  begin
-    if processhandler.is64bit then
-    begin
-      //check if there is a region I can make use of for a jump trampoline
-      if FindFreeBlockForRegion(a,2048)=nil then
-      begin
-        Assemble('jmp '+inttohex(b,8),a,ab);
-        jumpsize:=length(ab);
-      end
-      else
-        jumpsize:=5;
-    end
-    else
-      jumpsize:=5;
-  end;
-
-
-
-  disablescript:=tstringlist.Create;
-  enablescript:=tstringlist.Create;
-
-  codesize:=0;
-  b:=a;
-  while codesize<jumpsize do
-  begin
-    setlength(originalcode,length(originalcode)+1);
-    setlength(originaladdress,length(originalcode));
-
-    originaladdress[length(originaladdress)-1]:=a;
-    originalcode[length(originalcode)-1]:=d.disassemble(a,x);
-    i:=posex('-',originalcode[length(originalcode)-1]);
-    i:=posex('-',originalcode[length(originalcode)-1],i+1);
-    originalcode[length(originalcode)-1]:=copy(originalcode[length(originalcode)-1],i+2,length(originalcode[length(originalcode)-1]));
-
-    codesize:=a-b;
-  end;
-
-  getmem(originalcodebuffer,codesize);
-  if ReadProcessMemory(processhandle,pointer(b), originalcodebuffer, codesize, br) then
-  begin
-    disablescript.Add(address+':');
-    x:='db';
-
-    for i:=0 to br-1 do
-      x:=x+' '+inttohex(originalcodebuffer[i],2);
-
-    disablescript.Add(x);
-  end;
-
-  freemem(originalcodebuffer);
-
-
-
-  with enablescript do
-  begin
-    if (processhandler.SystemArchitecture=archx86) and (not processhandler.is64bit) then
-      add('alloc(originalcall'+nameextension+',2048)')
-    else
-    begin
-      add('alloc(originalcall'+nameextension+',2048,'+address+')');
-      add('alloc(jumptrampoline'+nameextension+',64,'+address+') //special jump trampoline in the current region (64-bit)');
-
-      if processhandler.SystemArchitecture=archx86 then
-        add('label(jumptrampoline'+nameextension+'address)');
+    try
+      a:=symhandler.getAddressFromName(address);
+    except
+      on e: exception do
+        raise exception.create(address+':'+e.message);
     end;
 
-    add('label(returnhere'+nameextension+')');
-    add('');
-    if addresstostoreneworiginalfunction<>'' then
-    begin
-      add(addresstostoreneworiginalfunction+':');
-      if processhandler.is64Bit then
-        add('dq originalcall'+nameextension)
-      else
-        add('dd originalcall'+nameextension);
-    end;
-    add('');
-    add('originalcall'+nameextension+':');
-
-    originalcodestart:=enablescript.Count;
-
-    for i:=0 to length(originalcode)-1 do
-    begin
-      if hasAddress(originalcode[i], tempaddress, nil ) then
-      begin
-        if InRangeX(tempaddress, b,b+codesize) then
-        begin
-          s2:='specifier'+nameextension+inttostr(specifiernr);
-          setlength(specifier,length(specifier)+1);
-          specifier[specifiernr]:=tempaddress;
-
-          Insert(0,'label('+s2+')');
-          if has4ByteHexString(originalcode[i], s) then //should be yes
-          begin
-            s:=copy(s,2,length(s)-1);
-
-            originalcode[i]:=StringReplace(originalcode[i],s,s2,[rfIgnoreCase]);
-          end;
-
-          inc(specifiernr);
-        end;
-      end;
-      add(originalcode[i]);
-    end;
-
-    //now find the originalcode line that belongs to the specifier
-    inc(originalcodestart,specifiernr);
-    for i:=0 to length(specifier)-1 do
-    begin
-      for j:=0 to length(originaladdress)-1 do
-      begin
-        if specifier[i]=originaladdress[j] then
-        begin
-          enablescript[originalcodestart+j]:='specifier'+nameextension+inttostr(i)+':'+enablescript[originalcodestart+j]
-        end;
-      end;
-    end;
-
-    i:=0;
-
-    while i<enablescript.count do
-    begin
-      j:=pos(':',enablescript[i]);
-
-      if j>0 then
-      begin
-        s:=enablescript[i];
-        s2:=copy(s,j+1,length(s));
-        delete(i);
-        Insert(i,copy(s,1,j));
-        inc(i);
-        Insert(i,s2);
-      end;
-
-      inc(i);
+    try
+      b:=symhandler.getAddressFromName(addresstogoto);
+    except
+      on e: exception do
+        raise exception.create(addresstogoto+':'+e.message);
     end;
 
     if processhandler.SystemArchitecture=archarm then
-      add('b returnhere'+nameextension)
-    else
-      add('jmp returnhere'+nameextension);
-
-    add('');
-
-    if processhandler.systemarchitecture=archarm then
     begin
-      add('jumptrampoline'+nameextension+':');
-      if isThumbDestination then
-      begin
-        raise exception.create('Thumb instructions are not yet implemented');
-        if isThumbOrigin then
-        begin
-          add('thumb:b '+addresstogoto);
-        end
-        else
-        begin
-          add('bx jumptrampoline_armtothumb+1');
-          add('jumptrampoline_armtothumb:');
-          add('thumb:bl '+addresstogoto);
-          add('thumb:bx jumptrampoline_thumbtoarm');
-          add('jumptrampoline_thumbtoarm');
-          add('bx lr');
-        end;
-      end
-      else
-        add('b '+addresstogoto);
+      isThumbOrigin:=(a and 1)=1; //assuming that a name is used and not the real address it occurs on
+      isThumbDestination:=(b and 1)=1;
 
-    end
-    else
-    if processhandler.is64bit then
-    begin
-      add('jumptrampoline'+nameextension+':');
-      add('jmp [jumptrampoline'+nameextension+'address]');
-      add('jumptrampoline'+nameextension+'address:');
-      add('dq '+addresstogoto);
-      add('');
-    end;
+      if isThumbOrigin or isThumbDestination then
+        raise exception.create('The thumb instruction set is not yet suppported');
 
 
-    add(address+':');
-
-    if processhandler.SystemArchitecture=archarm then
-    begin
-      add('B jumptrampoline'+nameextension);
+      jumpsize:=8;
+      c:=ptruint(FindFreeBlockForRegion(a,2048));
+      if (c>0) and (abs(integer(c-a))<31*1024*1024) then
+        jumpsize:=4; //can be done with one instruction B <a>
     end
     else
     begin
       if processhandler.is64bit then
-        add('jmp jumptrampoline'+nameextension)
-      else
-        add('jmp '+addresstogoto);
-
-      while codesize>jumpsize do
       begin
-        add('nop');
-        dec(codesize);
-      end;
+        //check if there is a region I can make use of for a jump trampoline
+        if FindFreeBlockForRegion(a,2048)=nil then
+        begin
+          Assemble('jmp '+inttohex(b,8),a,ab);
+          jumpsize:=length(ab);
+        end
+        else
+          jumpsize:=5;
+      end
+      else
+        jumpsize:=5;
     end;
 
-    add('returnhere'+nameextension+':');
 
-    add('');
+
+    disablescript:=tstringlist.Create;
+    enablescript:=tstringlist.Create;
+
+    codesize:=0;
+    b:=a;
+    while codesize<jumpsize do
+    begin
+      setlength(originalcode,length(originalcode)+1);
+      setlength(originaladdress,length(originalcode));
+
+      originaladdress[length(originaladdress)-1]:=a;
+      originalcode[length(originalcode)-1]:=d.disassemble(a,x);
+      i:=posex('-',originalcode[length(originalcode)-1]);
+      i:=posex('-',originalcode[length(originalcode)-1],i+1);
+      originalcode[length(originalcode)-1]:=copy(originalcode[length(originalcode)-1],i+2,length(originalcode[length(originalcode)-1]));
+
+      codesize:=a-b;
+    end;
+
+    getmem(originalcodebuffer,codesize);
+    if ReadProcessMemory(processhandle,pointer(b), originalcodebuffer, codesize, br) then
+    begin
+      disablescript.Add(address+':');
+      x:='db';
+
+      for i:=0 to br-1 do
+        x:=x+' '+inttohex(originalcodebuffer[i],2);
+
+      disablescript.Add(x);
+    end;
+
+    freemem(originalcodebuffer);
+    originalcodebuffer:=nil;
+
+
+
+    with enablescript do
+    begin
+      if (processhandler.SystemArchitecture=archx86) and (not processhandler.is64bit) then
+        add('alloc(originalcall'+nameextension+',2048)')
+      else
+      begin
+        add('alloc(originalcall'+nameextension+',2048,'+address+')');
+        add('alloc(jumptrampoline'+nameextension+',64,'+address+') //special jump trampoline in the current region (64-bit)');
+
+        if processhandler.SystemArchitecture=archx86 then
+          add('label(jumptrampoline'+nameextension+'address)');
+      end;
+
+      add('label(returnhere'+nameextension+')');
+      add('');
+      if addresstostoreneworiginalfunction<>'' then
+      begin
+        add(addresstostoreneworiginalfunction+':');
+        if processhandler.is64Bit then
+          add('dq originalcall'+nameextension)
+        else
+          add('dd originalcall'+nameextension);
+      end;
+      add('');
+      add('originalcall'+nameextension+':');
+
+      originalcodestart:=enablescript.Count;
+
+      for i:=0 to length(originalcode)-1 do
+      begin
+        {if hasAddress(originalcode[i], tempaddress, nil ) then
+        begin
+          if InRangeX(tempaddress, b,b+codesize) then
+          begin
+            s2:='specifier'+nameextension+inttostr(specifiernr);
+            setlength(specifier,length(specifier)+1);
+            specifier[specifiernr]:=tempaddress;
+
+            Insert(0,'label('+s2+')');
+            if has4ByteHexString(originalcode[i], s) then //should be yes
+            begin
+              s:=copy(s,2,length(s)-1);
+
+              originalcode[i]:=StringReplace(originalcode[i],s,s2,[rfIgnoreCase]);
+            end;
+
+            inc(specifiernr);
+          end;
+        end;  }
+        add(originalcode[i]);
+      end;
+
+      //now find the originalcode line that belongs to the specifier
+      inc(originalcodestart,specifiernr);
+      for i:=0 to length(specifier)-1 do
+      begin
+        for j:=0 to length(originaladdress)-1 do
+        begin
+          if specifier[i]=originaladdress[j] then
+          begin
+            enablescript[originalcodestart+j]:='specifier'+nameextension+inttostr(i)+':'+enablescript[originalcodestart+j]
+          end;
+        end;
+      end;
+
+      i:=0;
+
+      while i<enablescript.count do
+      begin
+        j:=pos(':',enablescript[i]);
+
+        if j>0 then
+        begin
+          s:=enablescript[i];
+          s2:=copy(s,j+1,length(s));
+          delete(i);
+          Insert(i,copy(s,1,j));
+          inc(i);
+          Insert(i,s2);
+        end;
+
+        inc(i);
+      end;
+
+      if processhandler.SystemArchitecture=archarm then
+        add('b returnhere'+nameextension)
+      else
+        add('jmp returnhere'+nameextension);
+
+      add('');
+
+      if processhandler.systemarchitecture=archarm then
+      begin
+        add('jumptrampoline'+nameextension+':');
+        if isThumbDestination then
+        begin
+          raise exception.create(rsThumbInstructionsAreNotYetImplemented);
+          if isThumbOrigin then
+          begin
+            add('thumb:b '+addresstogoto);
+          end
+          else
+          begin
+            add('bx jumptrampoline_armtothumb+1');
+            add('jumptrampoline_armtothumb:');
+            add('thumb:bl '+addresstogoto);
+            add('thumb:bx jumptrampoline_thumbtoarm');
+            add('jumptrampoline_thumbtoarm');
+            add('bx lr');
+          end;
+        end
+        else
+          add('b '+addresstogoto);
+
+      end
+      else
+      if processhandler.is64bit then
+      begin
+        add('jumptrampoline'+nameextension+':');
+        add('jmp [jumptrampoline'+nameextension+'address]');
+        add('jumptrampoline'+nameextension+'address:');
+        add('dq '+addresstogoto);
+        add('');
+      end;
+
+
+      add(address+':');
+
+      if processhandler.SystemArchitecture=archarm then
+      begin
+        add('B jumptrampoline'+nameextension);
+      end
+      else
+      begin
+        if processhandler.is64bit then
+          add('jmp jumptrampoline'+nameextension)
+        else
+          add('jmp '+addresstogoto);
+
+        while codesize>jumpsize do
+        begin
+          add('nop');
+          dec(codesize);
+        end;
+      end;
+
+      add('returnhere'+nameextension+':');
+
+      add('');
+    end;
+
+
+    getenableanddisablepos(script,enablepos,disablepos);
+
+    if disablepos<>-1 then
+    begin
+      for i:=0 to disablescript.Count-1 do
+        script.Insert(disablepos+i+1,disablescript[i]);
+    end;
+
+    getenableanddisablepos(script,enablepos,disablepos); //idiots putting disable first
+
+    if enablepos<>-1 then
+    begin
+      for i:=0 to enablescript.Count-1 do
+        script.Insert(enablepos+i+1,enablescript[i]);
+    end
+    else
+      script.AddStrings(enablescript);
+
+    disablescript.free;
+    enablescript.free;
+
+    d.free;
+
+  finally
+    if targetself then
+    begin
+      processhandler.processhandle:=oldhandle;
+      symhandler:=oldsymhandler;
+    end;
   end;
-
-
-  getenableanddisablepos(script,enablepos,disablepos);
-
-  if disablepos<>-1 then
-  begin
-    for i:=0 to disablescript.Count-1 do
-      script.Insert(disablepos+i+1,disablescript[i]);
-  end;
-
-  getenableanddisablepos(script,enablepos,disablepos); //idiots putting disable first
-
-  if enablepos<>-1 then
-  begin
-    for i:=0 to enablescript.Count-1 do
-      script.Insert(enablepos+i+1,enablescript[i]);
-  end
-  else
-    script.AddStrings(enablescript);
-
-  disablescript.free;
-  enablescript.free;
-
-  d.free;
 end;
 
 
@@ -1161,110 +1400,86 @@ begin
     else
       luaserverinit.add('loadlibrary(luaclient-i386.dll)');
 
-    luaserverinit.add('luacall(openLuaServer(''CELUASERVER''))');
-    luaserverinit.add('globalalloc(luainit, 128)');
-    luaserverinit.add('globalalloc(LuaFunctionCall, 128)');
-    luaserverinit.add('label(luainit_exit)');
-    if processhandler.is64bit then
-      luaserverinit.add('globalalloc(luaserverinitialized, 8)')
-    else
-      luaserverinit.add('globalalloc(luaserverinitialized, 4)');
 
-    luaserverinit.add('globalalloc(luaservername, 12)');
+    luaserverinit.add('luacall(openLuaServer(''CELUASERVER''))');
+
     luaserverinit.add('');
-    luaserverinit.add('luaservername:');
+    luaserverinit.add('CELUA_ServerName:');
     luaserverinit.add('db ''CELUASERVER'',0');
     luaserverinit.add('');
-    luaserverinit.add('luainit:');
 
-    if processhandler.is64Bit then
-      luaserverinit.add('sub rsp,8 //local scratchspace (and alignment)');
-
-    luaserverinit.add('cmp [luaserverinitialized],0');
-    luaserverinit.add('jne luainit_exit');
-
-
-    if processhandler.is64Bit then
-    begin
-      luaserverinit.add('sub rsp,20 //allocate 32 bytes scratchspace for CELUA_Initialize');
-      luaserverinit.add('mov rcx,luaservername');
-    end
-    else
-      luaserverinit.add('push luaservername');
-
-    luaserverinit.add('call CELUA_Initialize //this function is defined in the luaclient dll');
-    if processhandler.is64Bit then
-      luaserverinit.add('add rsp,20');
-
-    luaserverinit.add('mov [luaserverinitialized],eax');
-    luaserverinit.add('luainit_exit:');
-    if processhandler.is64Bit then
-      luaserverinit.add('add rsp,8  //undo local scratchspace ');
-
-    luaserverinit.add('ret');
-    luaserverinit.add('');
-
-    luaserverinit.add('LuaFunctionCall:');
-    if processhandler.is64bit then
-    begin
-      luaserverinit.add('sub rsp,8 //private scratchspace for this function');
-      luaserverinit.add('mov [rsp+10],rcx //save address with function into pre-allocated scratchspace');
-      luaserverinit.add('mov [rsp+18],rdx //save integer val');
-      luaserverinit.add('sub rsp,20 //allocate 32 bytes of "shadow space" for the callee (not needed here, but good practice) ');
-    end
-    else
-    begin
-      luaserverinit.add('push ebp');
-      luaserverinit.add('mov ebp,esp');
-    end;
-    luaserverinit.add('call luainit');
-
-    if processhandler.is64bit then
-    begin
-      luaserverinit.add('add rsp,20');
-      luaserverinit.add('mov rcx,[esp+10] //restore address of function');
-      luaserverinit.add('mov rdx,[esp+18] //restore value');
-    end;
-    luaserverinit.add('');
-
-    if processhandler.is64Bit then
-    begin
-      luaserverinit.add('sub rsp,20');
-      luaserverinit.add('call CELUA_ExecuteFunction //this function is defined in the luaclient dll');
-      luaserverinit.add('add rsp,20');
-      luaserverinit.add('add rsp,8 //undo scratchpace (alignment fix) you can also combine it into add rsp,28');
-      luaserverinit.add('ret');
-    end
-    else
-    begin
-      luaserverinit.add('push [ebp+c]');
-      luaserverinit.add('push [ebp+8]');
-      luaserverinit.add('call CELUA_ExecuteFunction');
-      luaserverinit.add('pop ebp');
-      luaserverinit.add('ret 8');
-    end;
-
+    luaserverinit.add('{');
     luaserverinit.add('//luacall call example:');
     if processhandler.is64bit then
     begin
       luaserverinit.add('//Make sure rsp is aligned on a 16-byte boundary when calling this function');
-      luaserverinit.add('//mov rcx, addresstostringwithfunction //(The lua function will have access to the variable passed by name "parameter")');
-      luaserverinit.add('//mov rdx, integervariableyouwishtopasstolua');
-      luaserverinit.add('//sub rsp,20');
-      luaserverinit.add('//call LuaFunctionCall');
-      luaserverinit.add('//add rsp,20');
-      luaserverinit.add('//When done RAX will contain the result of the lua function');
+      luaserverinit.add('mov rcx, addresstostringwithfunction //(The lua function will have access to the variable passed by name "parameter")');
+      luaserverinit.add('mov rdx, integervariableyouwishtopasstolua');
+      luaserverinit.add('sub rsp,20');
+      luaserverinit.add('call CELUA_ExecuteFunction // or CELUA_ExecuteFunctionAsync if you don''t need GUI access or want to handle it yourself');
+      luaserverinit.add('add rsp,20');
+      luaserverinit.add('');
+      luaserverinit.add('//------');
+      luaserverinit.add('//Alternate call by ref example:');
+      luaserverinit.add('');
+      luaserverinit.add('mov ecx,[addresswithluafunctionidstored]');
+      luaserverinit.add('test ecx,ecx');
+      luaserverinit.add('jne short hasrefid');
+      luaserverinit.add('');
+      luaserverinit.add('mov rcx,addresswithluafunctionname');
+      luaserverinit.add('call CELUA_GetFunctionReferenceFromName  //Basically calls createRef(functionname) and returns the value');
+      luaserverinit.add('mov [addresswithluafunctionidstored],eax');
+      luaserverinit.add('mov ecx,eax');
+      luaserverinit.add('');
+      luaserverinit.add('hasrefid:');
+      luaserverinit.add('mov edx,numberofparameterstopass');
+      luaserverinit.add('mov r8,addresswithparameterlist  //could be the stack.  e.g lea r8,[rsp+8]');
+      luaserverinit.add('mov [r8],param1');
+      luaserverinit.add('mov [r8+8],param2');
+      luaserverinit.add('mov [r8+c],param3');
+      luaserverinit.add('//...');
+      luaserverinit.add('mov r9,0 //0=no async, 1=async.  Use async if you do not wish to update the GUI. Faster');
+      luaserverinit.add('call CELUA_ExecuteFunctionByReference');
+      luaserverinit.add('');
+      luaserverinit.add('When done RAX will contain the result of the lua function');
+      luaserverinit.add('And as per 64-bit calling convention, RCX, RDX, R8, R9, R10, R11 may have been altered. So save/restore them beforehand');
+
+
     end
     else
     begin
-      luaserverinit.add('//push integervariableyouwishtopasstolua');
-      luaserverinit.add('//push addresstostringwithfunction  //(The lua function will have access to the variable passed by name "parameter")');
-      luaserverinit.add('//call LuaFunctionCall');
-      luaserverinit.add('//When done EAX will contain the result of the lua function');
+      luaserverinit.add('push integervariableyouwishtopasstolua');
+      luaserverinit.add('push addresstostringwithfunction  //(The lua function will have access to the variable passed by name "parameter")');
+      luaserverinit.add('call CELUA_ExecuteFunction');
+      luaserverinit.add('');
+      luaserverinit.add('//------');
+      luaserverinit.add('//Alternate call by ref example:');
+      luaserverinit.add('');
+      luaserverinit.add('mov eax,[addresswithluafunctionidstored]');
+      luaserverinit.add('test eax,eax');
+      luaserverinit.add('jne short hasrefid');
+      luaserverinit.add('');
+      luaserverinit.add('push addresswithluafunctionname');
+      luaserverinit.add('call CELUA_GetFunctionReferenceFromName  //Basically calls createRef(functionname) and returns the value');
+      luaserverinit.add('mov [addresswithluafunctionidstored],eax');
+
+      luaserverinit.add('hasrefid:');
+      luaserverinit.add('mov [addresswithparameterlist],param1');
+      luaserverinit.add('mov [addresswithparameterlist+4],param2');
+      luaserverinit.add('mov [addresswithparameterlist+8],param3');
+      luaserverinit.add('//...');
+      luaserverinit.add('push 0 //0=no async, 1=async.  Use async if you do not wish to update the GUI. Faster');
+      luaserverinit.add('push addresswithparameterlist');
+      luaserverinit.add('push numberofparameterstopass');
+      luaserverinit.add('push eax //push the reference ID of the function');
+      luaserverinit.add('call CELUA_ExecuteFunctionByReference');
+      luaserverinit.add('');
+
+      luaserverinit.add('When done EAX will contain the result of the lua function');
+      luaserverinit.add('And as per common 32-bit calling convention, EDX and ECX could have been altered. So save/restore them beforehand');
     end;
 
-
-
+    luaserverinit.add('}');
 
     for i:=0 to luaserverinit.count-1 do
       assemblescreen.Lines.Insert(0+i, luaserverinit[i]);
@@ -1295,7 +1510,6 @@ var starts,stops: string;
 
 begin
 {$ifndef standalonetrainerwithassembler}
-
   starts:=inttohex(memorybrowser.disassemblerview.SelectedAddress,8);
   stops:=inttohex(memorybrowser.disassemblerview.SelectedAddress+128,8);
 
@@ -1414,11 +1628,11 @@ begin
 
   if length(scripts)=2 then //first time new
   begin
-    tlist.AddTab('Script 1');
+    tlist.AddTab(rsScript1);
     tlist.Visible:=true;
   end;
 
-  i:=tlist.AddTab('Script '+inttostr(length(scripts)));
+  i:=tlist.AddTab(rsScript+inttostr(length(scripts)));
   tlist.SelectedTab:=i;
   oldtabindex:=i;
 {$endif}
@@ -1454,8 +1668,10 @@ end;
 
 
 procedure TfrmAutoInject.FormCreate(Sender: TObject);
-var x: array of integer;
-    reg: tregistry;
+var
+  i: integer;
+  x: array of integer;
+  reg: tregistry;
 begin
 
 
@@ -1545,6 +1761,10 @@ begin
   finally
     reg.free;
   end;
+
+
+  for i:=0 to length(AutoAssemblerTemplates)-1 do
+    addTemplate(i);
 
 {$endif}
 end;
@@ -1700,9 +1920,9 @@ begin
   //now allocate memory for the script and write it to there
   totalmem:=length(assemblescreen.text);
   address:=VirtualAllocEx(processhandle,nil,totalmem+512,mem_commit,page_execute_readwrite);
-  if address=nil then raise exception.create('Failed allocating memory for the script');
+  if address=nil then raise exception.create(rsFailedAllocatingMemoryForTheScript);
   if not WriteProcessMemory(processhandle,address,@s[1],totalmem,totalwritten) then
-    raise exception.create('failed writing the script to the process');
+    raise exception.create(rsFailedWritingTheScriptToTheProcess);
 
 
 
@@ -1730,9 +1950,9 @@ begin
       //lets wait before injecting the callscript script
       symhandler.waitforsymbolsloaded;
       if not symhandler.getmodulebyname('undercdll.dll',mi) then
-        raise exception.Create('Failure loading undercdll');
+        raise exception.Create(rsFailureLoadingUndercdll);
     end;
-    if not autoassemble(callscriptscript,false,true,false,false,CEAllocArray) then raise exception.Create('Failed creating calling stub for script located at address '+inttohex(ptrUint(address),8));
+    if not autoassemble(callscriptscript,false,true,false,false,CEAllocArray) then raise exception.Create(rsFailedCreatingCallingStubForScriptLocatedAtAddress+inttohex(ptrUint(address),8));
   finally
     callscriptscript.free;
   end;
@@ -1793,6 +2013,7 @@ end;
 
 procedure TfrmAutoInject.Find1Click(Sender: TObject);
 begin
+  finddialog1.Options:=finddialog1.Options-[frFindNext];
   if finddialog1.Execute then
     mifindNext.visible:=true;
 
@@ -1801,9 +2022,11 @@ end;
 procedure TfrmAutoInject.FindDialog1Find(Sender: TObject);
 begin
   //scan the text for the given text
-  assemblescreen.SearchReplace(finddialog1.FindText,'',[]);
+  ReplaceDialog1.Options:=finddialog1.Options;
+  ReplaceDialog1.FindText:=finddialog1.FindText;
+  ReplaceDialog1.OnFind(ReplaceDialog1);
 
-  FindDialog1.close;
+  finddialog1.options:=finddialog1.options+[frFindNext];
 end;
 
 //follow is just a emergency fix since undo is messed up. At least it's better than nothing
@@ -1860,9 +2083,8 @@ begin
 end;
 
 // \/   http://forum.cheatengine.org/viewtopic.php?t=566415 (jgoemat and some mods by db)
-procedure TfrmAutoInject.menuFullInjectionClick(Sender: TObject);
+procedure GenerateFullInjectionScript(Script: tstrings; address: string);
 var
-  address: string;
   originalcode: array of string;
   originalbytes: array of byte;
   codesize: integer;
@@ -1882,9 +2104,6 @@ var
   enablecode: tstringlist;
   disablecode: tstringlist;
 
-  mi: TModuleInfo;
-
-  haveModule: boolean;
   originalAddress: ptrUint;
   AddressString: string;
   maxBytesSize: integer;
@@ -1897,232 +2116,245 @@ var
   injectLastLine: Integer;
   dline: TDisassemblyLine;
   ddBytes: string;
+
+  mi: TModuleInfo;
 begin
-  {$ifndef standalonetrainerwithassembler}
-    // now heavily modified code from "Code injection" menu
-    a:=memorybrowser.disassemblerview.SelectedAddress;
 
-    mi.baseaddress := 0;
-    haveModule := symhandler.getmodulebyaddress(a,mi);
-    if haveModule then
-    begin
-      address:='"'+mi.modulename+'"+'+inttohex(a-mi.baseaddress,1);
-    end
-    else
-      address:=inttohex(a,8);
+  try
+    a:=StrToQWordEx('$'+address);
+  except
+    a:=symhandler.getaddressfromname(address);
+  end;
 
-    if inputquery(rsCodeInjectTemplate, rsOnWhatAddressDoYouWantTheJump, address) then
+  ZeroMemory(@mi, sizeof(mi));
+  symhandler.getmodulebyaddress(a, mi);
+
+
+  c:=a;
+  injectnr:=0;
+  for i:=0 to script.Count-1 do
+  begin
+    j:=pos('alloc(newmem',lowercase(script[i]));
+    if j<>0 then
     begin
+      x:=copy(script[i],j+12,length(script[i]));
+      x:=copy(x,1,pos(',',x)-1);
       try
-        a:=StrToQWordEx('$'+address);
+        k:=strtoint(x);
+        if injectnr<=k then
+          injectnr:=k+1;
       except
-        a:=symhandler.getaddressfromname(address);
+        inc(injectnr);
       end;
-      c:=a;
-      injectnr:=0;
-      for i:=0 to assemblescreen.Lines.Count-1 do
-      begin
-        j:=pos('alloc(newmem',lowercase(assemblescreen.lines[i]));
-        if j<>0 then
-        begin
-          x:=copy(assemblescreen.Lines[i],j+12,length(assemblescreen.Lines[i]));
-          x:=copy(x,1,pos(',',x)-1);
-          try
-            k:=strtoint(x);
-            if injectnr<=k then
-              injectnr:=k+1;
-          except
-            inc(injectnr);
-          end;
-        end;
-      end;
-      if injectnr = 0 then nr := '' else nr := sysutils.IntToStr(injectnr);
-
-
-      // disassemble the old code, simply for putting original code in the script
-      // and for the bytes we assert must be there and will replace
-      setlength(originalcode,0);
-      codesize:=0;
-
-      while codesize<5 do
-      begin
-        setlength(originalcode,length(originalcode)+1);
-        originalcode[length(originalcode)-1]:=disassemble(c,x);
-        i:=posex('-',originalcode[length(originalcode)-1]);
-        i:=posex('-',originalcode[length(originalcode)-1],i+1);
-        originalcode[length(originalcode)-1]:=copy(originalcode[length(originalcode)-1],i+2,length(originalcode[length(originalcode)-1]));
-        codesize:=c-a;
-      end;
-
-      setlength(originalbytes,codesize);
-      ReadProcessMemory(processhandle, pointer(a), @originalbytes[0], codesize, br);
-
-
-      // same as menu option "Cheat Engine framework code", make sure we
-      // have enable and disable
-      getenableanddisablepos(assemblescreen.lines,enablepos,disablepos);
-
-      if enablepos=-1 then //-2 is 2 or more, so bugged, and >=0 is has one
-      begin
-        assemblescreen.Lines.Insert(0,'[ENABLE]');
-        assemblescreen.Lines.Insert(1,'');
-      end;
-
-      if disablepos=-1 then
-      begin
-        assemblescreen.Lines.Add('[DISABLE]');
-        assemblescreen.Lines.Add('');
-      end;
-
-
-      dline:=TDisassemblyLine.create;
-      initialcode:=tstringlist.Create;
-      enablecode:=tstringlist.Create;
-      disablecode:=tstringlist.Create;
-      addressList:=tstringlist.Create;
-      bytesList:=tstringlist.Create;
-      codeList:=tstringlist.Create;
-
-      try
-        aobString:='';
-        for i:=0 to length(originalbytes)-1 do
-        begin
-          if i > 0 then
-            aobString := aobString + ' ';
-          aobString := aobString + inttohex(originalbytes[i], 2);
-        end;
-
-        with initialcode do
-        begin
-          add('define(address' + nr + ',' + address + ')');
-          add('define(bytes' + nr + ',' + aobString + ')');
-          add('');
-        end;
-
-        with enablecode do
-        begin
-          add('assert(address'+nr+',bytes'+nr+')');
-          if processhandler.is64bit then
-            add('alloc(newmem' + nr + ',$1000,' + address + ')')
-          else
-            add('alloc(newmem' + nr + ',$1000)');
-          add('');
-          add('label(code'+nr+')');
-          add('label(return'+nr+')');
-          add('');
-          add('newmem'+nr+':');
-
-          add('');
-          add('code'+nr+':');
-          for i:=0 to length(originalcode)-1 do
-            add('  '+originalcode[i]);
-          add('  jmp return'+nr+'');
-
-          add('');
-          add('address'+nr+':');
-          add('  jmp code'+nr+'');
-          while codesize>5 do
-          begin
-            add('  nop');
-            dec(codesize);
-          end;
-
-          add('return'+nr+':');
-          add('');
-        end;
-
-        with disablecode do
-        begin
-          add('address'+nr+':');
-          add('  db bytes'+nr);
-          for i:=0 to length(originalcode)-1 do
-            add('  // ' + originalcode[i]);
-          add('');
-          add('dealloc(newmem'+nr+')');
-        end;
-
-
-        // add initial defines before enable
-        getenableanddisablepos(assemblescreen.lines,enablepos,disablepos);
-        p:=0;
-        if (enablepos>0) then
-          p:=enablepos;
-        for i:=initialcode.Count-1 downto 0 do
-          assemblescreen.Lines.Insert(p,initialcode[i]);
-
-        // add enable lines before disable
-        getenableanddisablepos(assemblescreen.lines,enablepos,disablepos);
-        p:=assemblescreen.lines.Count-1;
-        if(disablepos>0) then
-          p:=disablepos;
-        for i:=enablecode.Count-1 downto 0 do
-          assemblescreen.Lines.Insert(p,enablecode[i]);
-
-        // add disable lines at very end
-        for i:=0 to disablecode.Count-1do
-          assemblescreen.Lines.Add(disablecode[i]);
-
-        // finally add comment at the beginning
-        assemblescreen.Lines.Insert(0,'{ Game   : ' + copy(mainform.ProcessLabel.Caption, pos('-', mainform.ProcessLabel.Caption) + 1, length(mainform.ProcessLabel.Caption)));
-        assemblescreen.Lines.Insert(1,'  Version: ');
-        assemblescreen.Lines.Insert(2,'  Date   : ' + FormatDateTime('YYYY-MM-DD', Now));
-        assemblescreen.Lines.Insert(3,'  Author : ' + UserName);
-        assemblescreen.Lines.Insert(4,'');
-        assemblescreen.Lines.Insert(5,'  This script does blah blah blah');
-        assemblescreen.Lines.Insert(6,'}');
-        assemblescreen.Lines.Insert(7,'');
-
-        // now we disassemble quite a bit more code for comments at the
-        // bottom so someone can easily find the code again if the game
-        // is updated
-        assemblescreen.Lines.Add('');
-        assemblescreen.Lines.Add('{');
-        assemblescreen.Lines.Add('// ORIGINAL CODE - INJECTION POINT: ' + address);
-        assemblescreen.Lines.Add('');
-
-        injectFirstLine := 0;
-        injectLastLine := 0;
-        maxBytesSize := 0;
-        dline.Init(a - 128, mi);
-
-
-        while dline.Address < (a + 128) do
-        begin
-          if (dline.Address < a) and ((dline.Address + dline.Size) > a) then dline.Shorten((dline.Address + dline.Size) - a);
-          addressList.Add(dline.AddressString);
-          ddBytes := dline.GetHexBytes;
-          maxBytesSize := Max(maxBytesSize, Length(ddBytes));
-          bytesList.Add(ddBytes);
-          codeList.Add(dline.Code);
-          if (dline.Address >= a) and (injectFirstLine <= 0) then injectFirstLine := addressList.Count - 1;
-          if (dline.Address < a + codesize) then injectLastLine := addressList.Count - 1;
-          dline.Init(dline.Address + dline.Size, mi);
-        end;
-
-        for i := injectFirstLine - 10 to injectLastLine + 10 do
-        begin
-          if i = injectFirstLine then assemblescreen.Lines.Add('// ---------- INJECTING HERE ----------');
-          assemblescreen.Lines.Add(addressList[i] + ': ' + PadRight(bytesList[i],maxBytesSize) + ' - ' + codeList[i]);
-          if i = injectLastLine then assemblescreen.Lines.Add('// ---------- DONE INJECTING  ----------');
-        end;
-        assemblescreen.Lines.Add('}');
-      finally
-        initialcode.free;
-        enablecode.free;
-        disablecode.Free;
-        addressList.Free;
-        bytesList.Free;
-        codeList.Free;
-        dline.free;
-      end;
-
     end;
-  {$endif}
+  end;
+  if injectnr = 0 then nr := '' else nr := sysutils.IntToStr(injectnr);
+
+
+  // disassemble the old code, simply for putting original code in the script
+  // and for the bytes we assert must be there and will replace
+  setlength(originalcode,0);
+  codesize:=0;
+
+  while codesize<5 do
+  begin
+    setlength(originalcode,length(originalcode)+1);
+    originalcode[length(originalcode)-1]:=disassemble(c,x);
+    i:=posex('-',originalcode[length(originalcode)-1]);
+    i:=posex('-',originalcode[length(originalcode)-1],i+1);
+    originalcode[length(originalcode)-1]:=copy(originalcode[length(originalcode)-1],i+2,length(originalcode[length(originalcode)-1]));
+    codesize:=c-a;
+  end;
+
+  setlength(originalbytes,codesize);
+  ReadProcessMemory(processhandle, pointer(a), @originalbytes[0], codesize, br);
+
+
+  // same as menu option "Cheat Engine framework code", make sure we
+  // have enable and disable
+  getenableanddisablepos(script,enablepos,disablepos);
+
+  if enablepos=-1 then //-2 is 2 or more, so bugged, and >=0 is has one
+  begin
+    script.Insert(0,'[ENABLE]');
+    script.Insert(1,'');
+  end;
+
+  if disablepos=-1 then
+  begin
+    script.Add('[DISABLE]');
+    script.Add('');
+  end;
+
+
+  dline:=TDisassemblyLine.create;
+  initialcode:=tstringlist.Create;
+  enablecode:=tstringlist.Create;
+  disablecode:=tstringlist.Create;
+  addressList:=tstringlist.Create;
+  bytesList:=tstringlist.Create;
+  codeList:=tstringlist.Create;
+
+  try
+    aobString:='';
+    for i:=0 to length(originalbytes)-1 do
+    begin
+      if i > 0 then
+        aobString := aobString + ' ';
+      aobString := aobString + inttohex(originalbytes[i], 2);
+    end;
+
+    with initialcode do
+    begin
+      add('define(address' + nr + ',' + address + ')');
+      add('define(bytes' + nr + ',' + aobString + ')');
+      add('');
+    end;
+
+    with enablecode do
+    begin
+      add('assert(address'+nr+',bytes'+nr+')');
+      if processhandler.is64bit then
+        add('alloc(newmem' + nr + ',$1000,' + address + ')')
+      else
+        add('alloc(newmem' + nr + ',$1000)');
+      add('');
+      add('label(code'+nr+')');
+      add('label(return'+nr+')');
+      add('');
+      add('newmem'+nr+':');
+
+      add('');
+      add('code'+nr+':');
+      for i:=0 to length(originalcode)-1 do
+        add('  '+originalcode[i]);
+      add('  jmp return'+nr+'');
+
+      add('');
+      add('address'+nr+':');
+      add('  jmp newmem'+nr+'');
+      while codesize>5 do
+      begin
+        add('  nop');
+        dec(codesize);
+      end;
+
+      add('return'+nr+':');
+      add('');
+    end;
+
+    with disablecode do
+    begin
+      add('address'+nr+':');
+      add('  db bytes'+nr);
+      for i:=0 to length(originalcode)-1 do
+        add('  // ' + originalcode[i]);
+      add('');
+      add('dealloc(newmem'+nr+')');
+    end;
+
+
+    // add initial defines before enable
+    getenableanddisablepos(script,enablepos,disablepos);
+    p:=0;
+    if (enablepos>0) then
+      p:=enablepos;
+    for i:=initialcode.Count-1 downto 0 do
+      script.Insert(p,initialcode[i]);
+
+    // add enable lines before disable
+    getenableanddisablepos(script,enablepos,disablepos);
+    p:=script.Count-1;
+    if(disablepos>0) then
+      p:=disablepos;
+    for i:=enablecode.Count-1 downto 0 do
+      script.Insert(p,enablecode[i]);
+
+    // add disable lines at very end
+    for i:=0 to disablecode.Count-1do
+      script.Add(disablecode[i]);
+
+    // finally add comment at the beginning
+    script.Insert(0,'{ Game   : ' + copy(mainform.ProcessLabel.Caption, pos('-', mainform.ProcessLabel.Caption) + 1, length(mainform.ProcessLabel.Caption)));
+    script.Insert(1,'  Version: ');
+    script.Insert(2,'  Date   : ' + FormatDateTime('YYYY-MM-DD', Now));
+    script.Insert(3,'  Author : ' + UserName);
+    script.Insert(4,'');
+    script.Insert(5,'  This script does blah blah blah');
+    script.Insert(6,'}');
+    script.Insert(7,'');
+
+    // now we disassemble quite a bit more code for comments at the
+    // bottom so someone can easily find the code again if the game
+    // is updated
+    script.Add('');
+    script.Add('{');
+    script.Add('// ORIGINAL CODE - INJECTION POINT: ' + address);
+    script.Add('');
+
+    injectFirstLine := 0;
+    injectLastLine := 0;
+    maxBytesSize := 0;
+    dline.Init(a - 128, mi);
+
+
+    while dline.Address < (a + 128) do
+    begin
+      if (dline.Address < a) and ((dline.Address + dline.Size) > a) then dline.Shorten((dline.Address + dline.Size) - a);
+      addressList.Add(dline.AddressString);
+      ddBytes := dline.GetHexBytes;
+      maxBytesSize := Max(maxBytesSize, Length(ddBytes));
+      bytesList.Add(ddBytes);
+      codeList.Add(dline.Code);
+      if (dline.Address >= a) and (injectFirstLine <= 0) then injectFirstLine := addressList.Count - 1;
+      if (dline.Address < a + codesize) then injectLastLine := addressList.Count - 1;
+      dline.Init(dline.Address + dline.Size, mi);
+    end;
+
+    for i := injectFirstLine - 10 to injectLastLine + 10 do
+    begin
+      if i = injectFirstLine then script.Add('// ---------- INJECTING HERE ----------');
+      script.Add(addressList[i] + ': ' + PadRight(bytesList[i],maxBytesSize) + ' - ' + codeList[i]);
+      if i = injectLastLine then script.Add('// ---------- DONE INJECTING  ----------');
+    end;
+    script.Add('}');
+  finally
+    initialcode.free;
+    enablecode.free;
+    disablecode.Free;
+    addressList.Free;
+    bytesList.Free;
+    codeList.Free;
+    dline.free;
+  end;
+
+
 end;
 
-procedure TfrmAutoInject.menuAOBInjectionClick(Sender: TObject);
+procedure TfrmAutoInject.menuFullInjectionClick(Sender: TObject);
 var
+  a: ptruint;
   address: string;
+  mi: TModuleInfo;
+begin
+  a:=memorybrowser.disassemblerview.SelectedAddress;
+
+  if symhandler.getmodulebyaddress(a,mi) then
+    address:='"'+mi.modulename+'"+'+inttohex(a-mi.baseaddress,1)
+  else
+    address:=inttohex(a,8);
+
+  if inputquery(rsCodeInjectTemplate, rsOnWhatAddressDoYouWantTheJump, address) then
+    generateFullInjectionScript(assemblescreen.Lines, address);
+end;
+
+procedure TfrmAutoInject.MenuItem1Click(Sender: TObject);
+begin
+  ReplaceDialog1.execute;
+end;
+
+procedure GenerateAOBInjectionScript(script: TStrings; address: string; symbolname: string);
+var
   a: ptrUint;                     // pointer to injection point
   originalcode: array of string;  // disassembled code we're replacing
   originalbytes: array of byte;   // bytes we're replacing
@@ -2154,37 +2386,246 @@ var
   codeList: TStringList;
   ddBytes: String;
 
-  haveModule: boolean;        // true if address is in a module
   mi: TModuleInfo;            // info on the module
   dline: TDisassemblyLine;    // for disassembling code in the bottom comment
   injectFirstLine: Integer;
   injectLastLine: Integer;
   resultAOB: String;
   resultOffset: Integer;
-  symbolName: String;
   symbolNameWithOffset: String;
 begin
-{$ifndef standalonetrainerwithassembler}
   // now heavily modified code from "Code injection" menu
+
+  try
+    a:=StrToQWordEx('$'+address);
+  except
+    a:=symhandler.getaddressfromname(address);
+  end;
+
+  mi.baseaddress:=0;
+  symhandler.getmodulebyaddress(a,mi);
+
+  c:=a;
+  injectnr:=0;
+  for i:=0 to script.Count-1 do
+  begin
+    j:=pos('alloc(newmem',lowercase(script[i]));
+    if j<>0 then
+    begin
+      x:=copy(script[i],j+12,length(script[i]));
+      x:=copy(x,1,pos(',',x)-1);
+      try
+        k:=strtoint(x);
+        if injectnr<=k then
+          injectnr:=k+1;
+      except
+        inc(injectnr);
+      end;
+    end;
+  end;
+  if injectnr = 0 then nr := '' else nr := sysutils.IntToStr(injectnr);
+
+
+  // disassemble the old code, simply for putting original code in the script
+  // and for the bytes we assert must be there and will replace
+  setlength(originalcode,0);
+  codesize:=0;
+
+  while codesize<5 do
+  begin
+    setlength(originalcode,length(originalcode)+1);
+    originalcode[length(originalcode)-1]:=disassemble(c,x);
+    i:=posex('-',originalcode[length(originalcode)-1]);
+    i:=posex('-',originalcode[length(originalcode)-1],i+1);
+    originalcode[length(originalcode)-1]:=copy(originalcode[length(originalcode)-1],i+2,length(originalcode[length(originalcode)-1]));
+    codesize:=c-a;
+  end;
+
+  setlength(originalbytes, codesize);
+  ReadProcessMemory(processhandle, pointer(a), @originalbytes[0], codesize, br);
+
+  // same as menu option "Cheat Engine framework code", make sure we
+  // have enable and disable
+  getenableanddisablepos(script,enablepos,disablepos);
+
+  if enablepos=-1 then //-2 is 2 or more, so bugged, and >=0 is has one
+  begin
+    script.Insert(0,'[ENABLE]');
+    script.Insert(1,'');
+  end;
+
+  if disablepos=-1 then
+  begin
+    script.Add('[DISABLE]');
+    script.Add('');
+  end;
+
+  dline:=TDisassemblyLine.create;
+  initialcode:=tstringlist.Create;
+  enablecode:=tstringlist.Create;
+  disablecode:=tstringlist.Create;
+  addressList:=tstringlist.Create;
+  bytesList:=tstringlist.Create;
+  codeList:=tstringlist.Create;
+
+  try
+    //************************************************************************
+    //* Now do AOBScan and get name for injection symbol
+    //************************************************************************
+    resultAOB := GetUniqueAOB(mi, a, codesize, resultOffset);
+
+    if resultOffset <> 0 then
+      symbolNameWithOffset := symbolName + '+' + IntToHex(resultOffset, 2)
+    else
+      symbolNameWithOffset := symbolName;
+
+    aobString:='';
+    for i:=0 to length(originalbytes)-1 do
+    begin
+      if i > 0 then
+        aobString := aobString + ' ';
+      aobString := aobString + IntToHex(originalbytes[i], 2);
+    end;
+
+    with enablecode do
+    begin
+      if (mi.baseAddress > 0) then
+        add('aobscanmodule(' + symbolName + ',' + mi.modulename + ',' + resultAOB + ') // should be unique')
+      else
+        add('aobscan(' + symbolName + ',' + resultAOB + ') // should be unique');
+
+      if processhandler.is64bit then
+        add('alloc(newmem' + nr + ',$1000,' + address + ')')
+      else
+        add('alloc(newmem' + nr + ',$1000)');
+      add('');
+      add('label(code'+nr+')');
+      add('label(return'+nr+')');
+      add('');
+      add('newmem'+nr+':');
+
+      add('');
+      add('code' + nr + ':');
+      for i:=0 to length(originalcode) - 1 do
+        add('  ' + originalcode[i]);
+      add('  jmp return'+nr+'');
+
+      add('');
+      add(symbolNameWithOffset + ':');
+      add('  jmp newmem' + nr + '');
+      for i := 6 to codesize do
+        add('  nop');
+      add('return' + nr + ':');
+      add('registersymbol(' + symbolName + ')');
+      add('');
+    end;
+
+    with disablecode do
+    begin
+      add(symbolNameWithOffset+':');
+      add('  db ' + aobString);
+      add('');
+      add('unregistersymbol(' + symbolName + ')');
+      add('dealloc(newmem'+nr+')');
+    end;
+
+
+    // add initial defines before enable
+    getenableanddisablepos(script,enablepos,disablepos);
+    p:=0;
+    if (enablepos>0) then
+      p:=enablepos;
+    for i:= initialcode.Count-1 downto 0 do
+      script.Insert(p, initialcode[i]);
+
+    // add enable lines before disable
+    getenableanddisablepos(script, enablepos, disablepos);
+    p := script.Count - 1;
+    if(disablepos > 0) then
+      p := disablepos;
+    for i:= enablecode.Count - 1 downto 0 do
+      script.Insert(p,enablecode[i]);
+
+    // add disable lines at very end
+    for i:= 0 to disablecode.Count - 1 do
+      script.Add(disablecode[i]);
+
+    // add template comment at the beginning
+    script.Insert(0,'{ Game   : ' + copy(mainform.ProcessLabel.Caption, pos('-', mainform.ProcessLabel.Caption) + 1, length(mainform.ProcessLabel.Caption)));
+    script.Insert(1,'  Version: ');
+    script.Insert(2,'  Date   : ' + FormatDateTime('YYYY-MM-DD', Now));
+    script.Insert(3,'  Author : ' + UserName);
+    script.Insert(4,'');
+    script.Insert(5,'  This script does blah blah blah');
+    script.Insert(6,'}');
+    script.Insert(7,'');
+
+    // now we disassemble quite a bit more code for comments at the
+    // bottom so someone can easily find the code again if the game
+    // is updated
+    script.Add('');
+    script.Add('{');
+    script.Add('// ORIGINAL CODE - INJECTION POINT: ' + address);
+    script.Add('');
+
+    injectFirstLine := 0;
+    injectLastLine := 0;
+    maxBytesSize := 0;
+    dline.Init(a - 128, mi);
+
+    while dline.Address < (a + 128) do
+    begin
+      // see if we overshot our injection point
+      if (dline.Address < a) and ((dline.Address + dline.Size) > a) then dline.Shorten((dline.Address + dline.Size) - a);
+      addressList.Add(dline.AddressString);
+      ddBytes := dline.GetHexBytes;
+      maxBytesSize := Max(maxBytesSize, Length(ddBytes));
+      bytesList.Add(ddBytes);
+      codeList.Add(dline.Code);
+      if (dline.Address >= a) and (injectFirstLine <= 0) then injectFirstLine := addressList.Count - 1;
+      if (dline.Address < a + codesize) then injectLastLine := addressList.Count - 1;
+      dline.Init(dline.Address + dline.Size, mi);
+    end;
+    for i := injectFirstLine - 10 to injectLastLine + 10 do
+    begin
+      if i = injectFirstLine then script.Add('// ---------- INJECTING HERE ----------');
+      script.Add(addressList[i] + ': ' + PadRight(bytesList[i],maxBytesSize) + ' - ' + codeList[i]);
+      if i = injectLastLine then script.Add('// ---------- DONE INJECTING  ----------');
+    end;
+    script.Add('}');
+  finally
+    initialcode.free;
+    enablecode.free;
+    disablecode.Free;
+    addressList.Free;
+    bytesList.Free;
+    codeList.Free;
+    dline.free;
+  end;
+
+
+end;
+
+procedure TfrmAutoInject.menuAOBInjectionClick(Sender: TObject);
+var
+  a: ptruint;
+  address: string;
+  nr: string;
+  i,j,k: integer;
+  injectnr: integer;
+  x: string;
+  mi: TModuleInfo;
+  symbolname: string;
+begin
   a:=memorybrowser.disassemblerview.SelectedAddress;
 
-  mi.baseaddress := 0;
-  haveModule := symhandler.getmodulebyaddress(a,mi);
-  if haveModule then
-  begin
-    address:='"'+mi.modulename+'"+'+inttohex(a-mi.baseaddress,1);
-  end
+  if symhandler.getmodulebyaddress(a,mi) then
+    address:='"'+mi.modulename+'"+'+inttohex(a-mi.baseaddress,1)
   else
     address:=inttohex(a,8);
 
   if inputquery(rsCodeInjectTemplate, rsOnWhatAddressDoYouWantTheJump, address) then
   begin
-    try
-      a:=StrToQWordEx('$'+address);
-    except
-      a:=symhandler.getaddressfromname(address);
-    end;
-    c:=a;
     injectnr:=0;
     for i:=0 to assemblescreen.Lines.Count-1 do
     begin
@@ -2204,189 +2645,14 @@ begin
     end;
     if injectnr = 0 then nr := '' else nr := sysutils.IntToStr(injectnr);
 
+    symbolname:='INJECT'+nr;
 
-    // disassemble the old code, simply for putting original code in the script
-    // and for the bytes we assert must be there and will replace
-    setlength(originalcode,0);
-    codesize:=0;
-
-    while codesize<5 do
-    begin
-      setlength(originalcode,length(originalcode)+1);
-      originalcode[length(originalcode)-1]:=disassemble(c,x);
-      i:=posex('-',originalcode[length(originalcode)-1]);
-      i:=posex('-',originalcode[length(originalcode)-1],i+1);
-      originalcode[length(originalcode)-1]:=copy(originalcode[length(originalcode)-1],i+2,length(originalcode[length(originalcode)-1]));
-      codesize:=c-a;
-    end;
-
-    setlength(originalbytes, codesize);
-    ReadProcessMemory(processhandle, pointer(a), @originalbytes[0], codesize, br);
-
-    // same as menu option "Cheat Engine framework code", make sure we
-    // have enable and disable
-    getenableanddisablepos(assemblescreen.lines,enablepos,disablepos);
-
-    if enablepos=-1 then //-2 is 2 or more, so bugged, and >=0 is has one
-    begin
-      assemblescreen.Lines.Insert(0,'[ENABLE]');
-      assemblescreen.Lines.Insert(1,'');
-    end;
-
-    if disablepos=-1 then
-    begin
-      assemblescreen.Lines.Add('[DISABLE]');
-      assemblescreen.Lines.Add('');
-    end;
-
-    dline:=TDisassemblyLine.create;
-    initialcode:=tstringlist.Create;
-    enablecode:=tstringlist.Create;
-    disablecode:=tstringlist.Create;
-    addressList:=tstringlist.Create;
-    bytesList:=tstringlist.Create;
-    codeList:=tstringlist.Create;
-
-    try
-      //************************************************************************
-      //* Now do AOBScan and get name for injection symbol
-      //************************************************************************
-      resultAOB := GetUniqueAOB(mi, a, codesize, resultOffset);
-      symbolName := 'INJECT' + nr;
-      if not inputquery(rsCodeInjectTemplate, rsWhatIdentifierDoYouWantToUse, symbolName) then symbolName := 'INJECTION_POINT';
-      if resultOffset <> 0 then
-        symbolNameWithOffset := symbolName + '+' + IntToHex(resultOffset, 2)
-      else
-        symbolNameWithOffset := symbolName;
-
-      aobString:='';
-      for i:=0 to length(originalbytes)-1 do
-      begin
-        if i > 0 then
-          aobString := aobString + ' ';
-        aobString := aobString + IntToHex(originalbytes[i], 2);
-      end;
-
-      with enablecode do
-      begin
-        if (mi.baseAddress > 0) then
-          add('aobscanmodule(' + symbolName + ',' + mi.modulename + ',' + resultAOB + ') // should be unique')
-        else
-          add('aobscan(' + symbolName + ',' + resultAOB + ') // should be unique');
-
-        if processhandler.is64bit then
-          add('alloc(newmem' + nr + ',$1000,' + address + ')')
-        else
-          add('alloc(newmem' + nr + ',$1000)');
-        add('');
-        add('label(code'+nr+')');
-        add('label(return'+nr+')');
-        add('');
-        add('newmem'+nr+':');
-
-        add('');
-        add('code' + nr + ':');
-        for i:=0 to length(originalcode) - 1 do
-          add('  ' + originalcode[i]);
-        add('  jmp return'+nr+'');
-
-        add('');
-        add(symbolNameWithOffset + ':');
-        add('  jmp code' + nr + '');
-        for i := 6 to codesize do
-          add('  nop');
-        add('return' + nr + ':');
-        add('registersymbol(' + symbolName + ')');
-        add('');
-      end;
-
-      with disablecode do
-      begin
-        add(symbolNameWithOffset+':');
-        add('  db ' + aobString);
-        add('');
-        add('unregistersymbol(' + symbolName + ')');
-        add('dealloc(newmem'+nr+')');
-      end;
-
-
-      // add initial defines before enable
-      getenableanddisablepos(assemblescreen.lines,enablepos,disablepos);
-      p:=0;
-      if (enablepos>0) then
-        p:=enablepos;
-      for i:= initialcode.Count-1 downto 0 do
-        assemblescreen.Lines.Insert(p, initialcode[i]);
-
-      // add enable lines before disable
-      getenableanddisablepos(assemblescreen.lines, enablepos, disablepos);
-      p := assemblescreen.lines.Count - 1;
-      if(disablepos > 0) then
-        p := disablepos;
-      for i:= enablecode.Count - 1 downto 0 do
-        assemblescreen.Lines.Insert(p,enablecode[i]);
-
-      // add disable lines at very end
-      for i:= 0 to disablecode.Count - 1 do
-        assemblescreen.Lines.Add(disablecode[i]);
-
-      // add template comment at the beginning
-      assemblescreen.Lines.Insert(0,'{ Game   : ' + copy(mainform.ProcessLabel.Caption, pos('-', mainform.ProcessLabel.Caption) + 1, length(mainform.ProcessLabel.Caption)));
-      assemblescreen.Lines.Insert(1,'  Version: ');
-      assemblescreen.Lines.Insert(2,'  Date   : ' + FormatDateTime('YYYY-MM-DD', Now));
-      assemblescreen.Lines.Insert(3,'  Author : ' + UserName);
-      assemblescreen.Lines.Insert(4,'');
-      assemblescreen.Lines.Insert(5,'  This script does blah blah blah');
-      assemblescreen.Lines.Insert(6,'}');
-      assemblescreen.Lines.Insert(7,'');
-
-      // now we disassemble quite a bit more code for comments at the
-      // bottom so someone can easily find the code again if the game
-      // is updated
-      assemblescreen.Lines.Add('');
-      assemblescreen.Lines.Add('{');
-      assemblescreen.Lines.Add('// ORIGINAL CODE - INJECTION POINT: ' + address);
-      assemblescreen.Lines.Add('');
-
-      injectFirstLine := 0;
-      injectLastLine := 0;
-      maxBytesSize := 0;
-      dline.Init(a - 128, mi);
-
-      while dline.Address < (a + 128) do
-      begin
-        // see if we overshot our injection point
-        if (dline.Address < a) and ((dline.Address + dline.Size) > a) then dline.Shorten((dline.Address + dline.Size) - a);
-        addressList.Add(dline.AddressString);
-        ddBytes := dline.GetHexBytes;
-        maxBytesSize := Max(maxBytesSize, Length(ddBytes));
-        bytesList.Add(ddBytes);
-        codeList.Add(dline.Code);
-        if (dline.Address >= a) and (injectFirstLine <= 0) then injectFirstLine := addressList.Count - 1;
-        if (dline.Address < a + codesize) then injectLastLine := addressList.Count - 1;
-        dline.Init(dline.Address + dline.Size, mi);
-      end;
-      for i := injectFirstLine - 10 to injectLastLine + 10 do
-      begin
-        if i = injectFirstLine then assemblescreen.Lines.Add('// ---------- INJECTING HERE ----------');
-        assemblescreen.Lines.Add(addressList[i] + ': ' + PadRight(bytesList[i],maxBytesSize) + ' - ' + codeList[i]);
-        if i = injectLastLine then assemblescreen.Lines.Add('// ---------- DONE INJECTING  ----------');
-      end;
-      assemblescreen.Lines.Add('}');
-    finally
-      initialcode.free;
-      enablecode.free;
-      disablecode.Free;
-      addressList.Free;
-      bytesList.Free;
-      codeList.Free;
-      dline.free;
-    end;
+    if inputquery(rsCodeInjectTemplate, rsWhatIdentifierDoYouWantToUse, symbolName) then
+      GenerateAOBInjectionScript(assemblescreen.Lines, address, symbolname);
   end;
-{$ENDIF}
 end;
 
-function TfrmAutoInject.GetUniqueAOB(mi: TModuleInfo; address: ptrUint; codesize: Integer; var resultOffset: Integer) : string;
+function GetUniqueAOB(mi: TModuleInfo; address: ptrUint; codesize: Integer; var resultOffset: Integer) : string;
 var
   size: integer;
   dline: TDisassemblyLine;
@@ -2567,7 +2833,7 @@ begin
 
   // if we can't find unique AOB, return earlier aob with error
   if shortestBeforeLength >= 100 then begin
-    result := 'ERROR: Could not find unique AOB, tried code "' + aob + '"';
+    result := rsERRORCouldNotFindUniqueAOBTriedCode + aob + '"';
     exit;
   end;
 
@@ -2749,6 +3015,7 @@ begin
 end;
 
 // /\   http://forum.cheatengine.org/viewtopic.php?t=566415 (jgoemat and some mods by db)
+
 
 initialization
   {$i frmautoinjectunit.lrs}

@@ -11,24 +11,32 @@ uses
   StdCtrls, ExtCtrls, LResources, MemoryRecordUnit, cefuncproc, customtypehandler, commonTypeDefs;
 
 type
+
+  { TTypeForm }
+
   TTypeForm = class(TForm)
-    Label1: TLabel;
-    VarType: TComboBox;
+    BitPanel: TPanel;
     Button1: TButton;
     Button2: TButton;
-    LengthPanel: TPanel;
+    cbunicode: TCheckBox;
+    cbCodePage: TCheckBox;
     Edit1: TEdit;
-    lengthlabel: TLabel;
-    BitPanel: TPanel;
+    Edit2: TEdit;
+    Label1: TLabel;
+    Label10: TLabel;
+    Label11: TLabel;
+    Label2: TLabel;
     Label4: TLabel;
     Label5: TLabel;
     Label6: TLabel;
     Label7: TLabel;
     Label8: TLabel;
     Label9: TLabel;
-    Label10: TLabel;
-    Label11: TLabel;
-    Label2: TLabel;
+    lengthlabel: TLabel;
+    LengthPanel: TPanel;
+    Panel1: TPanel;
+    Panel2: TPanel;
+    Panel3: TPanel;
     RadioButton1: TRadioButton;
     RadioButton2: TRadioButton;
     RadioButton3: TRadioButton;
@@ -37,10 +45,11 @@ type
     RadioButton6: TRadioButton;
     RadioButton7: TRadioButton;
     RadioButton8: TRadioButton;
-    Edit2: TEdit;
-    cbunicode: TCheckBox;
+    VarType: TComboBox;
     procedure Button2Click(Sender: TObject);
     procedure Button1Click(Sender: TObject);
+    procedure cbCodePageChange(Sender: TObject);
+    procedure cbunicodeChange(Sender: TObject);
     procedure VarTypeChange(Sender: TObject);
     procedure FormShow(Sender: TObject);
   private
@@ -125,6 +134,7 @@ begin
     lengthlabel.visible:=true;
     clientwidth:=lengthpanel.left+lengthpanel.Width;
     cbunicode.visible:=vartype.itemindex=7;
+    cbCodePage.visible:=cbunicode.Visible;
   end else
   begin
     bitpanel.visible:=false;
@@ -211,16 +221,28 @@ begin
     val(edit1.Text,MemoryRecord.Extra.stringData.length,err);
 
     MemoryRecord.Extra.stringData.unicode:=cbunicode.checked;
+    MemoryRecord.Extra.stringData.codepage:=cbCodePage.checked;
   end;
 
   if memoryrecord.vartype=vtByteArray then
   begin
-    MemoryRecord.Extra.byteData.bytelength:=bit;
+    val(edit1.Text,MemoryRecord.Extra.byteData.bytelength,err);
+
     if wasNotAOB then //it wasn't an aob before, set the hexadecimal value
       MemoryRecord.showAsHex:=true;
   end;
 
   modalresult:=mryes;
+end;
+
+procedure TTypeForm.cbCodePageChange(Sender: TObject);
+begin
+  if cbCodePage.checked then cbunicode.checked:=false;
+end;
+
+procedure TTypeForm.cbunicodeChange(Sender: TObject);
+begin
+  if cbunicode.checked then cbCodePage.checked:=false;
 end;
 
 procedure TTypeForm.VarTypeChange(Sender: TObject);
